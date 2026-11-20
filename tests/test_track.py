@@ -156,3 +156,50 @@ def test_spread_between_low_and_high_change_filings():
     s = track.spread(pd.DataFrame(rows), 90)
     assert abs(s["spread"] - 0.10) < 0.02 and s["lo"] < s["spread"] < s["hi"] and (s["n"], s["months"]) == (32, 8)
     assert track.spread(pd.DataFrame([r for r in rows if r["direction"] == 1]), 90) is None  # one side only
+
+
+# ---------------------------------------------------------------- cockpit
+
+from sqlalchemy import insert
+
+from core import cockpit, db
+
+
+def _fake_prices(monkeypatch):
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=300)
+    monkeypatch.setattr(prices, "closes", lambda tickers, start, engine=None, fetch=None:
+                        pd.DataFrame({tickers[0]: np.linspace(100, 130, 300)}, index=idx))
+    monkeypatch.setattr(edgar, "lookup", lambda t: {"cik": "0000000042", "name": "Acme <b>Corp</b>"})
+
+
+def test_clean_ticker():
+    assert cockpit.clean_ticker(" aapl ") == "AAPL" and cockpit.clean_ticker("BRK.B") == "BRK.B"
+    assert cockpit.clean_ticker("<script>") is None and cockpit.clean_ticker("") is None
+
+
+def test_card_data_empty_states(engine, monkeypatch):
+    _fake_prices(monkeypatch)
+    d = cockpit.card_data("ACME", engine=engine)
+    assert d["cards"] == {"debate": None, "insiders": None, "filing": None, "record": None}
+    assert d["name"] == "Acme <b>Corp</b>"  # raw: the component sets it as text, never as HTML
+    assert d["last"] == 130.0 and len(d["daily_1y"]) == 252 and d["chg_1y"] > 0
+
+
+def test_card_data_fills_cards(engine, monkeypatch):
+    _fake_prices(monkeypatch)
+    today = date.today()
+    with engine.begin() as conn:
+        conn.execute(insert(db.debates).values(ticker="ACME", model="m", winner="bear", bull_score=60, bear_score=70,
+                                               verdict_json="{}", transcript_json="[]"))
+        conn.execute(insert(db.insider_tx), [dict(accession=f"a{i}", line_no=0, issuer_cik="0000000042", ticker="ACME",
+                                                  insider_cik=str(i), insider_name=f"I{i}", tx_date=today, code="P",
+                                                  acquired=True, value=50_000.0) for i in (1, 2)])
+        conn.execute(insert(db.filing_changes), [dict(issuer_cik="0000000042", ticker="ACME", accession=a, filed=f,
+                                                      section="MD&A", change_score=s)
+                                                 for a, f, s in (("x1", date(2025, 2, 1), 10), ("x2", date(2026, 2, 1), 30))])
+    track.record("debate", "ACME", -1, 10, today, "1", engine=engine)
+    cards = cockpit.card_data("ACME", engine=engine)["cards"]
+    assert (cards["debate"]["winner"], cards["debate"]["bear"]) == ("bear", 70)
+    assert (cards["insiders"]["insiders"], cards["insiders"]["total"]) == (2, 100_000.0)
+    assert cards["filing"]["combined"] == 30 and cards["filing"]["history"] == [10, 30]
+    assert cards["record"]["calls"] == 1
