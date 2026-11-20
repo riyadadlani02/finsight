@@ -85,8 +85,13 @@ def _api(path: str, params: dict, raw: bool = False):
     if wait > 0:
         time.sleep(wait)
     _last = time.monotonic()
-    resp = requests.get(API + path, params={**params, "Subscription-Key": key}, headers=HEADERS, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(API + path, params={**params, "Subscription-Key": key}, headers=HEADERS, timeout=60)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        # EDINET takes the key in the URL, so the original error text would carry it: never pass that on.
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        raise JapanError(f"EDINET request for {path} failed" + (f" (HTTP {status})" if status else "")) from None
     return resp.content if raw else resp.json()
 
 

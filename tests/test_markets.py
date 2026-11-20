@@ -172,3 +172,14 @@ def test_sections_from_edinet_csv():
         z.writestr("XBRL_TO_CSV/jpcrp030000-asr-001.csv", ("\n".join(rows)).encode("utf-16"))
     s = japan.parse_sections(buf.getvalue())
     assert s == {"Risk Factors": "為替の変動は業績に影響します。", "MD&A": "売上高は増加しました。"}
+
+
+def test_edinet_errors_never_carry_the_key(monkeypatch):
+    import requests
+    monkeypatch.setenv("EDINET_API_KEY", "SECRET-KEY-123")
+    def fail(url, params=None, **kw):
+        raise requests.HTTPError(f"403 Client Error for url: {url}?Subscription-Key={params['Subscription-Key']}")
+    monkeypatch.setattr(japan.requests, "get", fail)
+    with pytest.raises(japan.JapanError) as err:
+        japan._api("documents.json", {"date": "2026-06-20", "type": 2})
+    assert "SECRET-KEY-123" not in str(err.value) and err.value.__cause__ is None and err.value.__suppress_context__
