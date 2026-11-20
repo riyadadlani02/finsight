@@ -6,13 +6,15 @@ close after that, so nothing here uses information a reader didn't have yet.
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import pandas as pd
+import requests
 from sqlalchemy import insert, select
 
-from . import db
+from . import bulk_insider, db, edgar, insider
 
 HORIZONS = (30, 90, 180)
 BENCHMARK = "SPY"
@@ -165,3 +167,57 @@ def filing_direction(score: float, cutoffs: tuple[float, float]) -> int:
     """Lazy Prices: big changers underperform (-1), near-identical filings outperform (+1)."""
     lo, hi = cutoffs
     return -1 if score >= hi else 1 if score <= lo else 0
+
+
+# ------------------------------------------------------------ backtests
+
+UNIVERSE = Path(__file__).with_name("universe_sp100.txt")
+Progress = Callable[[int, int], None]
+
+
+def universe() -> list[str]:
+    return [line.strip() for line in UNIVERSE.read_text().splitlines() if line.strip() and not line.startswith("#")]
+
+
+def backtest_filings(tickers: list[str], engine=None, progress: Progress | None = None) -> int:
+    """Score each company's last six 10-Ks, rank within each filing year, and record backtest calls."""
+    from . import changes  # changes records live calls through this module
+    engine, found = engine or db.engine(), []
+    for i, ticker in enumerate(tickers, 1):
+        try:
+            found += [(ticker, y) for y in changes.score_company(ticker, years=6, engine=engine)]
+        except (edgar.EdgarError, requests.RequestException):
+            pass  # no 10-Ks, or the SEC timed out: the company simply isn't in the backtest
+        if progress:
+            progress(i, len(tickers))
+    by_year: dict[str, list] = {}
+    for ticker, y in found:
+        by_year.setdefault(y.filed[:4], []).append((ticker, y))
+    recorded = 0
+    for group in by_year.values():  # quintiles within a filing year, so a busy year doesn't shift every cut-off
+        cutoffs = tuple(np.percentile([y.combined for _, y in group], [20, 80]))
+        for ticker, y in group:
+            recorded += record("filing_change", ticker, filing_direction(y.combined, cutoffs), y.combined,
+                               date.fromisoformat(y.filed), y.accession, mode="backtest", engine=engine)
+    return recorded
+
+
+def backtest_insider(years: int = 5, engine=None, progress: Progress | None = None, today: date | None = None) -> int:
+    """Cluster events from the SEC's quarterly data sets, with the radar's default thresholds."""
+    today = today or date.today()
+    months = pd.date_range(pd.Timestamp(today) - pd.DateOffset(years=years), pd.Timestamp(today), freq="MS")
+    quarters = sorted({(m.year, (m.month - 1) // 3 + 1) for m in months})
+    frames = []
+    for i, (year, q) in enumerate(quarters, 1):
+        path = bulk_insider.download(year, q)
+        if path is not None:  # None: not published yet
+            frames.append(bulk_insider.load_quarter(path))
+        if progress:
+            progress(i, len(quarters))
+    if not frames:
+        return 0
+    buys = pd.concat(frames, ignore_index=True)  # one frame, so clusters spanning a quarter end are found
+    events = insider.cluster_events(buys[~buys["planned_10b5_1"].astype(bool)])
+    return sum(record("insider_cluster", e.ticker, 1, e.score, e.public_date, f"{e.issuer_cik}:{e.first_buy}",
+                      mode="backtest", issuer_cik=e.issuer_cik, engine=engine)
+               for e in events.itertuples() if e.ticker)

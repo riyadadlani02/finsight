@@ -119,3 +119,31 @@ def test_load_quarter_joins_tables(tmp_path):
     assert (row["ticker"], row["issuer_cik"], row["insider_cik"], row["officer_title"]) == ("ACME", "0000000007", "0000000099", "CFO")
     assert row["is_director"] and row["is_officer"] and not row["is_ten_pct"] and not row["planned_10b5_1"]
     assert row["value"] == 25_500 and row["filed"] == date(2025, 10, 31) and row["tx_date"] == pd.Timestamp("2025-10-29")
+
+
+# ---------------------------------------------------------------- backtests
+
+def test_backtest_filings_quintiles(engine, monkeypatch):
+    from core import changes
+    scores = {f"T{i}": i * 10 for i in range(10)}  # combined change scores 0..90, all filed the same year
+    monkeypatch.setattr(changes, "score_company", lambda t, years=6, engine=None: [
+        changes.YearChange(f"acc-{t}", "prev", "2024-02-01", {"MD&A": scores[t]}, scores[t])])
+    assert track.backtest_filings(list(scores), engine=engine) == 10
+    calls = track.load_calls(engine, mode="backtest").set_index("ticker")["direction"]
+    assert calls[["T8", "T9"]].tolist() == [-1, -1] and calls[["T0", "T1"]].tolist() == [1, 1]
+    assert (calls.drop(["T0", "T1", "T8", "T9"]) == 0).all()
+    assert track.filing_cutoffs(engine) == (18.0, 72.0)
+
+
+def test_backtest_insider_records_cluster_events(engine, monkeypatch):
+    def buy(n, tx, filed, planned=False):
+        return dict(accession=f"a{n}", issuer_cik="0000000007", ticker="ACME", issuer_name="Acme", insider_cik=str(n),
+                    insider_name=f"I{n}", officer_title="", tx_date=pd.Timestamp(tx), value=60_000.0,
+                    planned_10b5_1=planned, filed=date.fromisoformat(filed))
+    rows = pd.DataFrame([buy(1, "2025-11-03", "2025-11-04"), buy(2, "2025-11-04", "2025-11-05"),
+                         buy(3, "2025-11-05", "2025-11-06", planned=True), buy(4, "2025-11-06", "2025-11-07")])
+    monkeypatch.setattr(bulk_insider, "download", lambda y, q, dest=None: f"{y}q{q}" if (y, q) == (2025, 4) else None)
+    monkeypatch.setattr(bulk_insider, "load_quarter", lambda path: rows)
+    assert track.backtest_insider(years=1, engine=engine, today=date(2026, 3, 1)) == 1
+    (call,) = track.load_calls(engine, mode="backtest").itertuples()
+    assert (call.kind, call.ticker, call.public_date) == ("insider_cluster", "ACME", date(2025, 11, 7))  # 10b5-1 buy excluded
