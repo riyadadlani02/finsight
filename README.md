@@ -28,7 +28,7 @@ Synthetic mode plants rings (victims to mules to cash-out, with splits and cycle
 
 ![Mule ring graph](docs/screenshots/mule-ring.jpg)
 
-CSV mode needs `sender, receiver, amount`, plus an optional timestamp and fraud label; PaySim and IBM AML column names are recognised. For big files, put them in `data/` and use the path box.
+CSV mode needs `sender, receiver, amount`, plus an optional timestamp and fraud label; PaySim and IBM AML column names are recognised. For big files, put them in `data/` and pick them from the dropdown; the app reads nothing from disk outside that folder.
 
 - With at least 20 labelled mule accounts, the GNN trains on your data and reports held-out metrics.
 - Without labels, the GNN trains on synthetic rings and is applied to your data. Treat those scores as leads and compare them with the `heuristic` column.

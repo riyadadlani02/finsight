@@ -1,4 +1,5 @@
 from html import escape
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -9,6 +10,9 @@ from core import ui
 from core.mule import data, gnn, graph, neo4j_store
 
 ui.header("Mule ring detector", "Transfers become a graph. A GraphSAGE model scores every account, then flagged accounts that move money between each other are grouped into rings.")
+
+# Only CSVs already in data/ can be read from disk: no free-form paths or URLs.
+DATA = Path(__file__).resolve().parent.parent / "data"
 
 COLORS = {"mule": ui.BEAR, "cash-out": "#5D4BA8", "payer": "#A9B4B0"}
 
@@ -22,7 +26,8 @@ with st.sidebar:
         seed = st.number_input("Seed", 0, 9999, 7)
     else:
         upload = st.file_uploader("Transactions CSV", type="csv")
-        path = st.text_input("...or a path on disk", placeholder="data/paysim.csv")
+        path = st.selectbox("...or a CSV in the data/ folder", ["", *sorted(f.name for f in DATA.glob("*.csv"))],
+                            help="Put large files in data/ and pick them here.")
         max_rows = st.number_input("Max rows to read", 10_000, 5_000_000, 500_000, step=50_000)
         st.caption("Needs sender, receiver, amount. Optional timestamp and fraud label. "
                    "PaySim and IBM AML column names are recognised.")
@@ -40,10 +45,10 @@ if run:
         if source.startswith("Synthetic"):
             tx, _ = data.generate(n_accounts, n_rings, seed=int(seed))
         else:
-            if not (upload or path.strip()):
-                st.error("Upload a CSV or give a path.")
+            if not (upload or path):
+                st.error("Upload a CSV or pick one from data/.")
                 st.stop()
-            tx = data.load_csv(upload or path.strip(), int(max_rows))
+            tx = data.load_csv(upload or DATA / path, int(max_rows))
     except Exception as exc:  # noqa: BLE001 - bad file/columns shown to the user
         st.error(f"Could not load the data: {exc}")
         st.stop()
