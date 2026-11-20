@@ -2,9 +2,24 @@
 
 Colours match .streamlit/config.toml and the design doc's "Look" section.
 """
+import hashlib
 from html import escape
+from pathlib import Path
 
 import streamlit as st
+
+
+def fingerprint(paths) -> str:
+    """Short hash of source files' contents."""
+    h = hashlib.sha256()
+    for p in sorted(Path(x) for x in paths):
+        h.update(p.read_bytes())
+    return h.hexdigest()[:12]
+
+
+# Pass to every st.cache_data function: Streamlit only hashes the cached function's own code, so after a
+# deploy it would keep serving results built by the old version of the code that function calls.
+CODE_VERSION = fingerprint(Path(__file__).resolve().parent.rglob("*.py"))
 
 BULL, BEAR, LINE, INK, MUTED = "#5CC9A7", "#E06A78", "#F4F8FA", "#EEF3F6", "#9AABB6"
 AMBER = "#E2B867"

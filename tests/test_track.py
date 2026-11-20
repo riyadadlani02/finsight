@@ -289,3 +289,26 @@ def test_card_data_for_an_indian_stock(engine, monkeypatch):
 def test_clean_ticker_allows_ampersand_symbols():
     assert cockpit.clean_ticker("m&m.ns") == "M&M.NS" and cockpit.clean_ticker("J&KBANK.NS") == "J&KBANK.NS"
     assert "input.maxLength = 20" in cockpit.JS
+
+
+def test_code_fingerprint_changes_when_code_changes(tmp_path):
+    from core import ui
+    a = tmp_path / "a.py"
+    a.write_text("x = 1")
+    first = ui.fingerprint([a])
+    a.write_text("x = 2")
+    assert ui.fingerprint([a]) != first and len(first) == 12 and len(ui.CODE_VERSION) == 12
+
+
+def test_load_quarter_before_the_sec_added_10b5_1(tmp_path):
+    # The SEC added AFF10B5ONE in 2023; older quarters don't have the column at all.
+    path = tmp_path / "2022q2_form345.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("SUBMISSION.tsv", "ACCESSION_NUMBER\tFILING_DATE\tDOCUMENT_TYPE\tISSUERCIK\tISSUERNAME\tISSUERTRADINGSYMBOL\n"
+                                     "0001-22-1\t15-APR-2022\t4\t0000000007\tAcme Corp\tACME\n")
+        z.writestr("REPORTINGOWNER.tsv", "ACCESSION_NUMBER\tRPTOWNERCIK\tRPTOWNERNAME\tRPTOWNER_RELATIONSHIP\tRPTOWNER_TITLE\n"
+                                         "0001-22-1\t0000000099\tDoe Jane\tDirector\t\n")
+        z.writestr("NONDERIV_TRANS.tsv", "ACCESSION_NUMBER\tTRANS_DATE\tTRANS_CODE\tTRANS_SHARES\tTRANS_PRICEPERSHARE\tTRANS_ACQUIRED_DISP_CD\n"
+                                         "0001-22-1\t13-APR-2022\tP\t1000\t20\tA\n")
+    (row,) = bulk_insider.load_quarter(path).itertuples()
+    assert row.ticker == "ACME" and row.value == 20_000 and not row.planned_10b5_1

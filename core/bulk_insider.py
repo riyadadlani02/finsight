@@ -42,13 +42,17 @@ def download(year: int, q: int, dest: Path = DATA / "sec_bulk") -> Path | None:
 def load_quarter(zip_path: Path) -> pd.DataFrame:
     """Open-market purchases (code P) from original Form 4s, in the shape of insider_tx rows plus `filed`."""
     with zipfile.ZipFile(zip_path) as z:
-        read = lambda name, cols: pd.read_csv(z.open(name), sep="\t", dtype=str, usecols=cols, keep_default_na=False)
+        # usecols as a filter: columns a quarter doesn't have are simply absent (AFF10B5ONE only exists from 2023).
+        read = lambda name, cols: pd.read_csv(z.open(name), sep="\t", dtype=str, usecols=lambda c: c in cols,
+                                              keep_default_na=False)
         sub = read("SUBMISSION.tsv", ["ACCESSION_NUMBER", "FILING_DATE", "DOCUMENT_TYPE", "ISSUERCIK", "ISSUERNAME",
                                       "ISSUERTRADINGSYMBOL", "AFF10B5ONE"])
         own = read("REPORTINGOWNER.tsv", ["ACCESSION_NUMBER", "RPTOWNERCIK", "RPTOWNERNAME", "RPTOWNER_RELATIONSHIP",
                                           "RPTOWNER_TITLE"])
         tx = read("NONDERIV_TRANS.tsv", ["ACCESSION_NUMBER", "TRANS_DATE", "TRANS_CODE", "TRANS_SHARES",
                                          "TRANS_PRICEPERSHARE", "TRANS_ACQUIRED_DISP_CD"])
+    if "AFF10B5ONE" not in sub:
+        sub["AFF10B5ONE"] = ""  # not reported before 2023: such trades can't be told apart, so none are excluded
     sub = sub[sub["DOCUMENT_TYPE"] == "4"]
     tx = tx[(tx["TRANS_CODE"] == "P") & (tx["TRANS_ACQUIRED_DISP_CD"] == "A")]
     own = own.drop_duplicates("ACCESSION_NUMBER")  # joint filings: keep the first reporting owner

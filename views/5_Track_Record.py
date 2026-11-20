@@ -25,7 +25,7 @@ def interval(lo: float, hi: float) -> str:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def graded_calls(mode: str, today: date) -> pd.DataFrame:
+def graded_calls(mode: str, today: date, code: str) -> pd.DataFrame:
     calls = track.load_calls(mode=mode)
     if calls.empty:
         return calls
@@ -35,7 +35,7 @@ def graded_calls(mode: str, today: date) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def curve(mode: str, kind: str, today: date) -> pd.DataFrame:
+def curve(mode: str, kind: str, today: date, code: str) -> pd.DataFrame:
     calls = track.load_calls(mode=mode)
     calls = calls[calls["kind"] == kind]
     closes = prices.closes(sorted(set(calls["ticker"])) + track.benchmarks_for(calls), min(calls["public_date"]) - timedelta(days=7))
@@ -47,7 +47,7 @@ mode = (left.segmented_control("Calls", ["Backtest", "Live"], default="Backtest"
 horizon = right.segmented_control("Horizon", [30, 90, 180], default=90, format_func=lambda h: f"{h} days") or 90
 
 with st.spinner("Grading calls against each market's prices (first run downloads prices)..."):
-    graded = graded_calls(mode, date.today())
+    graded = graded_calls(mode, date.today(), ui.CODE_VERSION)
 if not graded.empty:
     from core import markets
     present = sorted({track._market(r) for r in graded.to_dict("records")})
@@ -95,7 +95,7 @@ else:
     kinds = sorted(graded["kind"].unique())
     kind = st.selectbox("Path after the call", kinds, format_func=lambda k: {"debate": "Debates", "insider_cluster":
                         "Insider clusters", "filing_change": "Filing changes"}.get(k, k))
-    c = curve(mode, kind, date.today())
+    c = curve(mode, kind, date.today(), ui.CODE_VERSION)
     if c.empty:
         st.caption("No calls with prices to plot yet.")
     else:

@@ -15,7 +15,7 @@ FLAGSHIP = {"US": "AAPL", "IN": "RELIANCE.NS", "JP": "7203.T"}  # where switchin
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def cockpit_data(ticker: str, day: date) -> dict:
+def cockpit_data(ticker: str, day: date, code: str) -> dict:
     return cockpit.card_data(ticker)
 
 
@@ -36,7 +36,7 @@ def setup() -> None:
 def home() -> None:
     ticker = cockpit.clean_ticker(st.query_params.get("ticker")) or "AAPL"
     with st.spinner(f"Loading {ticker}..."):
-        data = cockpit_data(ticker, date.today())
+        data = cockpit_data(ticker, date.today(), ui.CODE_VERSION)
     switched, page, market = cockpit.render(data)
     if market in FLAGSHIP and market != data["market"]:
         st.query_params["ticker"] = FLAGSHIP[market]
