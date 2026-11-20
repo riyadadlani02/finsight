@@ -80,6 +80,20 @@ For the insider backtest, fetching Form 4s one at a time (as the radar does) wou
 - **Filing-change backtest:** over a fixed universe, score every consecutive pair among the last six 10-Ks, take quintiles within each filing year, and record backtest calls. Default universe: a static list of S&P 100 tickers in `core/universe_sp100.txt` (committed and edited by hand; `data/` is git-ignored); the page also accepts a custom list.
 - **Long jobs** (bulk downloads, scoring a universe) show progress and resume where they stopped, as the radar's market scan already does.
 
+### Look: the company cockpit
+
+Approved from a mockup (`docs/2026-11-21-cockpit-mockup.html`, inspired by Fantik Studio's CarWhisperer dashboard concept on Dribbble; the style is borrowed, not the artwork). It replaces the light "ledger" theme everywhere.
+
+- **Stage:** slate-blue vertical gradient (`#4A6474` to `#2D404C` to `#1B262D`) with a soft light from above, faint light shafts and a floor glow. Applied to the whole app, all pages.
+- **Type:** Manrope; large headings at weight 200 to 300 with tight tracking; tabular figures.
+- **Home becomes the cockpit** for one company at a time: company name and ticker (with a ticker switcher), price with today and one-year change chips, the price line as the lit centrepiece with hover readout, a tick-arc range dial (1M, 3M, 1Y, 5Y), and four frosted-glass cards: Bull vs Bear, Insider buying, 10-K change, Track record. Each card shows its headline number and a mini chart and opens its full page for the same ticker.
+- **Navigation:** sections in a glass pill at the top (`st.navigation(position="top")`); the left rail switches what the stage shows for the current company; the ticker carries between pages in the URL (`?ticker=`).
+- **Colours:** bull `#5CC9A7`, bear `#E06A78`, line `#F4F8FA`, text `#EEF3F6`, muted `#9AABB6`; glass `rgba(24,34,42,.46)` with a 1px `rgba(255,255,255,.11)` edge and an 18px blur.
+- **Other pages** keep their content and controls, restyled: glass panels instead of plain sections, light headings, charts and tables on the dark theme. The debate keeps its bull and bear edges and tug-of-war bar in the new colours.
+- **Cards with no data** say so plainly and offer the action that fills them ("No debate yet: start one"), never placeholder numbers.
+- **Build (builder's call):** the cockpit is a Streamlit v2 component (installed: `streamlit.components.v2`), so it renders in the page (glass blur works) and returns the chosen ticker and range to Python. If v2 can't do this, fall back to a v1 iframe component with the ticker input in Streamlit.
+- One page-load moment: the price line draws in. Respect reduced motion; keyboard focus visible on every control; cards stack on narrow screens.
+
 ### Tests
 
 Offline, with fixtures: change scores and paragraph classification on synthetic text; redline output; cluster-event detection and dating on synthetic trades; the bulk-file join on a tiny zip built in the test; grading math, pending status and confidence intervals on synthetic price series. No network, no API key.
