@@ -79,7 +79,7 @@ def company_tab() -> None:
                 if groups[kind]:
                     with st.expander(f"{label} ({len(groups[kind])})", expanded=kind == "added"):
                         paragraphs(groups[kind], redline=kind == "reworded")
-    st.page_link("views/1_Bull_vs_Bear.py", label=f"Debate {ticker}", query_params={"ticker": ticker})
+    st.page_link("views/7_Said_vs_Did.py", label=f"Check what {ticker}'s management promised", query_params={"ticker": ticker})
 
 
 def screen_tab() -> None:

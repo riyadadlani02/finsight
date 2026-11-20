@@ -44,8 +44,9 @@ def card_data(ticker: str, engine=None) -> dict:
                     weekly_5y=[_num(v) for v in s.resample("W").last().dropna()])
 
     with engine.connect() as conn:
-        t = db.debates
-        deb = conn.execute(select(t).where(t.c.ticker == ticker).order_by(t.c.created_at.desc()).limit(1)).first()
+        t = db.promises
+        latest = conn.execute(select(t.c.latest).where(t.c.ticker == ticker).order_by(t.c.checked_at.desc()).limit(1)).scalar()
+        ledger = [dict(r._mapping) for r in conn.execute(select(t.c.verdict).where(t.c.ticker == ticker, t.c.latest == latest))]
         t = db.insider_tx
         buys = pd.read_sql(select(t.c.insider_cik, t.c.value, t.c.tx_date).where(
             t.c.ticker == ticker, t.c.code == "P", t.c.acquired.is_(True), t.c.value > 0,
@@ -55,10 +56,12 @@ def card_data(ticker: str, engine=None) -> dict:
         t = db.calls
         calls = pd.read_sql(select(t.c.kind, t.c.direction, t.c.public_date, t.c.mode).where(t.c.ticker == ticker), conn)
 
-    cards: dict = {"debate": None, "insiders": None, "filing": None, "record": None}
-    if deb:
-        cards["debate"] = {"winner": deb.winner, "bull": deb.bull_score, "bear": deb.bear_score,
-                           "when": f"{deb.created_at:%d %b %Y}" if deb.created_at else ""}
+    cards: dict = {"said": None, "insiders": None, "filing": None, "record": None}
+    if ledger:
+        from . import promises
+        s = promises.score(ledger)
+        cards["said"] = {k: s[k] for k in ("kept", "partly", "missed", "dropped", "open", "resolved", "too_few")}
+        cards["said"]["credibility"] = None if s["too_few"] else round(s["credibility"] * 100)
     if not buys.empty:
         cards["insiders"] = {"insiders": int(buys["insider_cik"].nunique()), "total": float(buys["value"].sum()),
                              "last": str(pd.to_datetime(buys["tx_date"]).max().date())}
@@ -189,7 +192,7 @@ export default function (component) {
   // Stage: view rail, the price line, range controls.
   const mid = h("section", "middle"), rail = h("nav", "rail");
   label(rail, "Views");
-  [["⚖", "Debate", "debate"], ["◎", "Insiders", "radar"], ["●", "Price", null], ["▤", "Filings", "filings"], ["↗", "Record", "record"]]
+  [["⚖", "Said vs did", "said"], ["◎", "Insiders", "radar"], ["●", "Price", null], ["▤", "Filings", "filings"], ["↗", "Record", "record"]]
     .forEach(([icon, text, page]) => {
       const b = h("button", page ? "" : "on"); b.append(h("i", null, icon), document.createTextNode(text));
       if (page) b.onclick = () => open(page); else b.setAttribute("aria-current", "true");
@@ -218,13 +221,15 @@ export default function (component) {
   const empty = (body, text, action, page) => {
     body.append(h("div", "empty", text)); const b = h("button", "cta", action); b.onclick = () => open(page); body.append(b);
   };
-  card("⚖", "Bull vs Bear", c.debate ? "Last debate " + c.debate.when : "Two agents argue from the filings", "debate", body => {
-    if (!c.debate) return empty(body, "No debate yet.", "Start one", "debate");
-    const w = c.debate.winner, big = h("div", "big", w === "draw" ? "Draw" : w === "bull" ? "Bull" : "Bear");
-    big.append(h("small", null, `bull ${c.debate.bull}, bear ${c.debate.bear}`));
-    const split = h("div", "split"), b1 = h("div"), b2 = h("div");
-    b1.style.flex = c.debate.bull; b1.style.background = "var(--bull)"; b2.style.flex = c.debate.bear; b2.style.background = "var(--bear)";
-    split.append(b1, b2); body.append(big, split, h("div", "sub", "Scored on how well each side's case is supported by the filings"));
+  card("⚖", "Said vs did", "Management's promises, checked against later reports", "said", body => {
+    if (!c.said) return empty(body, "Promises not checked yet.", "Check promises", "said");
+    const big = h("div", "big", c.said.credibility == null ? "—" : c.said.credibility + "%");
+    big.append(h("small", null, c.said.too_few ? "too few to judge" : "credibility"));
+    const split = h("div", "split");
+    [["kept", "var(--bull)"], ["partly", "rgba(244,248,250,.55)"], ["missed", "var(--bear)"], ["dropped", "rgba(255,255,255,.18)"]]
+      .forEach(([k, color]) => { if (c.said[k]) { const b = h("div"); b.style.flex = c.said[k]; b.style.background = color; split.append(b); } });
+    body.append(big, split, h("div", "sub", `Kept ${c.said.kept}, partly ${c.said.partly}, missed ${c.said.missed}, ` +
+      `not mentioned again ${c.said.dropped}, still open ${c.said.open}`));
   });
   card("◎", "Insider buying", "Open-market, last 90 days", "radar", body => {
     if (!c.insiders) return empty(body, "No insider buying recorded in 90 days.", "Scan the radar", "radar");

@@ -130,3 +130,15 @@ def run(ticker: str, engine=None, years: int = YEARS) -> dict:
             with engine.begin() as conn:
                 conn.execute(insert(t), stored)
     return {"name": name, "ticker": ticker, "market": market, "latest": latest, "promises": stored, "score": score(stored)}
+
+
+def stored(ticker: str, engine=None) -> dict | None:
+    """The most recently built ledger for a company, read from the database (no Claude, no network)."""
+    engine, t = engine or db.engine(), db.promises
+    with engine.connect() as conn:
+        latest = conn.execute(select(t.c.latest).where(t.c.ticker == ticker).order_by(t.c.checked_at.desc(), t.c.id.desc())
+                              .limit(1)).scalar()
+        if latest is None:
+            return None
+        rows = [dict(r._mapping) for r in conn.execute(select(t).where(t.c.ticker == ticker, t.c.latest == latest).order_by(t.c.id))]
+    return {"ticker": ticker, "latest": latest, "promises": rows, "score": score(rows)}

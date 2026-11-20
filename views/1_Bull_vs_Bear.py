@@ -5,22 +5,8 @@ import streamlit as st
 
 from core import cockpit, config, db, debate, ui
 
-ui.header("Bull vs Bear", "Two Claude agents argue a stock from its SEC filings, then a judge scores who "
-          "argued from the evidence. " + debate.DISCLAIMER)
-
-# A ticker in the URL (from the cockpit, radar or filing changes) fills the box once per new value.
-url_ticker = cockpit.clean_ticker(st.query_params.get("ticker"))
-if url_ticker and st.session_state.get("_url_ticker") != url_ticker:
-    st.session_state["ticker_input"] = st.session_state["_url_ticker"] = url_ticker
-st.session_state.setdefault("ticker_input", "AAPL")
-
-with st.form("run", border=False):
-    left, mid, right = st.columns([2, 2, 1], vertical_alignment="bottom")
-    ticker = left.text_input("Ticker (US-listed, files with the SEC)", key="ticker_input").strip().upper()
-    depth = mid.select_slider("How much filing text the agents read", ["Short", "Standard", "Deep"], "Standard",
-                              help="Risk Factors and MD&A per filing. Deep costs more tokens.")
-    go = right.form_submit_button("Start debate", type="primary", width="stretch")
-
+ui.header("Past debates", "Bull vs Bear debates run before Said vs did replaced them. Kept for reference; "
+          "their verdicts stay in the track record.")
 
 def show_dossier(d: dict) -> None:
     with st.expander(f"What the agents were given ({len(d['text']):,} characters)"):
@@ -58,43 +44,11 @@ def show_verdict(v: dict) -> None:
     ui.point("What would change the verdict", v["what_would_change_the_verdict"])
 
 
-if go and ticker:
-    if not config.anthropic_key():
-        st.error("ANTHROPIC_API_KEY is not set. Add it to .env and restart.")
-        st.stop()
-    try:
-        with st.spinner(f"Reading {ticker}'s SEC filings..."):
-            chars = {"Short": 12000, "Standard": 30000, "Deep": 60000}[depth]
-            dossier = debate.build_dossier(ticker, chars)
-    except Exception as exc:  # noqa: BLE001 - EDGAR/network problems shown to the user
-        st.error(f"Couldn't build the dossier: {exc}")
-        st.stop()
 
-    st.header(f"{dossier['name']} ({dossier['ticker']})")
-    show_dossier(dossier)
-    transcript: list[dict] = []
-    try:
-        for i, (speaker, round_name, instruction) in enumerate(debate.ROUNDS):
-            turn = {"speaker": speaker, "round": round_name}
-            turn["text"] = show_turn(turn, str(i), debate.stream_turn(dossier, transcript, speaker, instruction))
-            transcript.append(turn)
-        with st.spinner("The judge is scoring both sides..."):
-            verdict = debate.judge(dossier, transcript)
-    except Exception as exc:  # noqa: BLE001 - API errors shown to the user
-        st.error(f"Claude API error: {exc}")
-        st.stop()
-    show_verdict(verdict)
-    try:
-        debate.save(dossier, transcript, verdict)
-    except Exception as exc:  # noqa: BLE001
-        st.caption(f"Not saved to history (database unavailable: {str(exc).splitlines()[0]})")
-
-st.divider()
-st.subheader("Past debates")
 if db.check()[0]:
     past = debate.history()
     if not past:
-        st.caption("Debates you run are saved here.")
+        st.caption("No debates were run before Said vs did replaced them.")
     for row in past:
         label = (f"**{row['ticker']}**, {row['created_at']:%d %b %Y %H:%M}: {row['winner']} "
                  f"({row['bull_score']} to {row['bear_score']})")

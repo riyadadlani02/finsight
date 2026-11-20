@@ -8,7 +8,8 @@ from core.mule import neo4j_store
 
 DEBATE, RADAR, MULE = "views/1_Bull_vs_Bear.py", "views/2_Insider_Radar.py", "views/3_Mule_Ring_Detector.py"
 CHANGES, RECORD = "views/4_Filing_Changes.py", "views/5_Track_Record.py"
-OPENS = {"debate": DEBATE, "radar": RADAR, "filings": CHANGES, "record": RECORD}  # cockpit card -> page
+SAID = "views/7_Said_vs_Did.py"
+OPENS = {"said": SAID, "debate": DEBATE, "radar": RADAR, "filings": CHANGES, "record": RECORD}  # cockpit card -> page
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -53,10 +54,11 @@ st.set_page_config(page_title="FinSight", page_icon="📈", layout="wide")
 ui.style()
 st.navigation([
     st.Page(home, title="Cockpit", default=True),
-    st.Page(DEBATE, title="Bull vs Bear"),
+    st.Page(SAID, title="Said vs did"),
     st.Page(RADAR, title="Insider radar"),
     st.Page(CHANGES, title="Filing changes"),
     st.Page(RECORD, title="Track record"),
     st.Page("views/6_Deals_Radar.py", title="Deals radar (India)"),
     st.Page(MULE, title="Mule ring detector"),
+    st.Page(DEBATE, title="Past debates"),
 ], position="top").run()

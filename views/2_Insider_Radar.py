@@ -91,8 +91,8 @@ st.dataframe(
 )
 
 left, right = st.columns(2)
-if row.ticker and left.button(f"Run a Bull vs Bear debate on {row.ticker}", type="primary"):
-    st.switch_page("views/1_Bull_vs_Bear.py", query_params={"ticker": row.ticker})
+if row.ticker and left.button(f"Check what {row.ticker}'s management promised", type="primary"):
+    st.switch_page("views/7_Said_vs_Did.py", query_params={"ticker": row.ticker})
 if config.alert_webhook():
     if right.button("Send new clusters to webhook"):
         st.success(f"{insider.send_new_alerts(clusters, engine)} alerts sent")

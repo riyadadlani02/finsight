@@ -181,7 +181,7 @@ def test_clean_ticker():
 def test_card_data_empty_states(engine, monkeypatch):
     _fake_prices(monkeypatch)
     d = cockpit.card_data("ACME", engine=engine)
-    assert d["cards"] == {"debate": None, "insiders": None, "filing": None, "record": None}
+    assert d["cards"] == {"said": None, "insiders": None, "filing": None, "record": None}
     assert d["name"] == "Acme <b>Corp</b>"  # raw: the component sets it as text, never as HTML
     assert d["last"] == 130.0 and len(d["daily_1y"]) == 252 and d["chg_1y"] > 0
 
@@ -190,8 +190,8 @@ def test_card_data_fills_cards(engine, monkeypatch):
     _fake_prices(monkeypatch)
     today = date.today()
     with engine.begin() as conn:
-        conn.execute(insert(db.debates).values(ticker="ACME", model="m", winner="bear", bull_score=60, bear_score=70,
-                                               verdict_json="{}", transcript_json="[]"))
+        conn.execute(insert(db.promises).values(ticker="ACME", latest="acc-26", pid="p1", promise="Cut debt",
+                                                verdict="kept", made_filed="2024-02-01"))
         conn.execute(insert(db.insider_tx), [dict(accession=f"a{i}", line_no=0, issuer_cik="0000000042", ticker="ACME",
                                                   insider_cik=str(i), insider_name=f"I{i}", tx_date=today, code="P",
                                                   acquired=True, value=50_000.0) for i in (1, 2)])
@@ -200,7 +200,7 @@ def test_card_data_fills_cards(engine, monkeypatch):
                                                  for a, f, s in (("x1", date(2025, 2, 1), 10), ("x2", date(2026, 2, 1), 30))])
     track.record("debate", "ACME", -1, 10, today, "1", engine=engine)
     cards = cockpit.card_data("ACME", engine=engine)["cards"]
-    assert (cards["debate"]["winner"], cards["debate"]["bear"]) == ("bear", 70)
+    assert (cards["said"]["resolved"], cards["said"]["kept"], cards["said"]["too_few"]) == (1, 1, True)
     assert (cards["insiders"]["insiders"], cards["insiders"]["total"]) == (2, 100_000.0)
     assert cards["filing"]["combined"] == 30 and cards["filing"]["history"] == [10, 30]
     assert cards["record"]["calls"] == 1

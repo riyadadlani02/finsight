@@ -67,3 +67,14 @@ def test_run_caches_per_latest_report(engine, monkeypatch):
     assert calls == {"extract": 3, "check": 1}  # the second run reads the stored ledger
     assert [p["verdict"] for p in first["promises"]] == [p["verdict"] for p in again["promises"]] == ["missed"]
     assert again["latest"] == "acc-26" and again["score"]["missed"] == 1
+
+
+def test_stored_reads_the_latest_ledger_without_claude(engine):
+    from sqlalchemy import insert
+    from core import db
+    assert promises.stored("ACME", engine=engine) is None
+    with engine.begin() as conn:
+        conn.execute(insert(db.promises), [{"ticker": "ACME", "latest": "acc-26", "pid": "p1", "promise": "x", "verdict": "kept"},
+                                           {"ticker": "ACME", "latest": "acc-26", "pid": "p2", "promise": "y", "verdict": "open"}])
+    s = promises.stored("ACME", engine=engine)
+    assert s["latest"] == "acc-26" and [p["pid"] for p in s["promises"]] == ["p1", "p2"] and s["score"]["kept"] == 1
