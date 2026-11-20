@@ -147,3 +147,12 @@ def test_backtest_insider_records_cluster_events(engine, monkeypatch):
     assert track.backtest_insider(years=1, engine=engine, today=date(2026, 3, 1)) == 1
     (call,) = track.load_calls(engine, mode="backtest").itertuples()
     assert (call.kind, call.ticker, call.public_date) == ("insider_cluster", "ACME", date(2025, 11, 7))  # 10b5-1 buy excluded
+
+
+def test_spread_between_low_and_high_change_filings():
+    rng = np.random.default_rng(2)
+    rows = [{"direction": d, "public_date": date(2024, m, 15), "status_90": "graded",
+             "excess_90": 0.05 * d + rng.normal(0, 0.01)} for m in range(1, 9) for d in (1, -1, 1, -1)]
+    s = track.spread(pd.DataFrame(rows), 90)
+    assert abs(s["spread"] - 0.10) < 0.02 and s["lo"] < s["spread"] < s["hi"] and (s["n"], s["months"]) == (32, 8)
+    assert track.spread(pd.DataFrame([r for r in rows if r["direction"] == 1]), 90) is None  # one side only

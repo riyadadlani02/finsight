@@ -122,6 +122,29 @@ def scoreboard(graded: pd.DataFrame, horizon: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+def spread(graded: pd.DataFrame, horizon: int, n: int = 2000, seed: int = 0) -> dict | None:
+    """Mean excess of +1 calls minus -1 calls, with a month-block 95% interval. None unless both sides exist."""
+    ok = graded[(graded[f"status_{horizon}"] == "graded") & graded["direction"].isin([1, -1])]
+    if ok.empty or ok["direction"].nunique() < 2:
+        return None
+    ex, months = ok[f"excess_{horizon}"].astype(float), ok["public_date"].map(_month)
+    # Per month: sum and count of excess for each side, so resampling months is cheap.
+    parts = np.array([[g.loc[g["direction"] == d, "e"].sum() if k == "s" else (g["direction"] == d).sum()
+                       for d in (1, -1) for k in ("s", "n")] for _, g in ok.assign(e=ex).groupby(months)])
+
+    def stat(rows: np.ndarray) -> float:
+        sp, np_, sn, nn = rows.sum(axis=0)
+        return sp / np_ - sn / nn if np_ and nn else np.nan
+
+    value = stat(parts)
+    lo = hi = np.nan
+    if len(parts) >= 2:
+        rng = np.random.default_rng(seed)
+        draws = [stat(parts[rng.integers(0, len(parts), len(parts))]) for _ in range(n)]
+        lo, hi = np.nanpercentile(draws, [2.5, 97.5])
+    return {"spread": float(value), "lo": float(lo), "hi": float(hi), "n": len(ok), "months": int(months.nunique())}
+
+
 def event_curve(calls: pd.DataFrame, closes: pd.DataFrame, days: int = 180) -> pd.DataFrame:
     """Average cumulative excess return by trading day since entry, signed by each call's direction."""
     idx, paths, months = closes.index, [], []
