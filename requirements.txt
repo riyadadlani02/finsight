@@ -1,4 +1,4 @@
-streamlit>=1.50
+streamlit>=1.67
 pandas>=2.2
 numpy>=1.26
 requests>=2.32
@@ -7,11 +7,13 @@ beautifulsoup4>=4.12
 lxml>=5.0
 SQLAlchemy>=2.0
 psycopg[binary]>=3.2
-anthropic>=0.60
+anthropic>=2.12
 yfinance>=0.2.50
 networkx>=3.3
 scikit-learn>=1.5
-torch>=2.3
+# Linux servers (Streamlit Cloud, Docker) get CPU-only torch; the default wheel pulls ~2 GB of CUDA.
+torch @ https://download.pytorch.org/whl/cpu/torch-2.15.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and platform_machine == "x86_64" and python_version == "3.12"
+torch>=2.3 ; sys_platform != "linux" or platform_machine != "x86_64" or python_version != "3.12"
 torch_geometric>=2.6
 neo4j>=5.20
 pyvis>=0.3.2
