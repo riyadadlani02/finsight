@@ -69,6 +69,17 @@ filing_changes = Table(
     UniqueConstraint("accession", "section", name="uq_filing_changes_section"),
 )
 
+# Daily adjusted closes (core/prices.py). A row with close NULL marks a ticker Yahoo had no data for.
+prices = Table(
+    "prices", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("ticker", String(20), nullable=False, index=True),
+    Column("date", Date, nullable=False),
+    Column("close", Float),
+    Column("fetched", Date, nullable=False),
+    UniqueConstraint("ticker", "date", name="uq_prices_day"),
+)
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),
