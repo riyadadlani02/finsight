@@ -1,10 +1,11 @@
 """Offline tests for prices, grading, calls and backtests: no network, no API key."""
+import zipfile
 from datetime import date
 
 import numpy as np
 import pandas as pd
 
-from core import prices, track
+from core import bulk_insider, edgar, prices, track
 
 
 def test_closes_caches_and_fills_missing(engine):
@@ -81,3 +82,40 @@ def test_scoreboard_too_few_and_block_intervals():
     clo, chi = track.block_ci(values, pd.Series(range(len(values))))  # each call its own block
     assert hi - lo > 2 * (chi - clo)
     assert all(np.isnan(track.block_ci(values, pd.Series([1] * len(values)))))
+
+
+# ---------------------------------------------------------------- SEC bulk insider data
+
+
+def test_quarter_url_paths():
+    base = "https://www.sec.gov/files/{}/data/insider-transactions-data-sets/{}_form345.zip"
+    assert bulk_insider.quarter_url(2025, 4) == base.format("structureddata", "2025q4")
+    assert bulk_insider.quarter_url(2026, 2) == base.format("datastandardsinnovation", "2026q2")
+
+
+def test_download_quarter_skips_missing(tmp_path, monkeypatch):
+    def missing(url):
+        raise edgar.EdgarError(f"Not found: {url}")
+    monkeypatch.setattr(edgar, "_get", missing)
+    assert bulk_insider.download(2031, 1, dest=tmp_path) is None and not list(tmp_path.iterdir())
+
+
+def test_load_quarter_joins_tables(tmp_path):
+    path = tmp_path / "2025q4_form345.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("SUBMISSION.tsv", "ACCESSION_NUMBER\tFILING_DATE\tDOCUMENT_TYPE\tISSUERCIK\tISSUERNAME\tISSUERTRADINGSYMBOL\tAFF10B5ONE\n"
+                                     "0001-25-1\t31-OCT-2025\t4\t0000000007\tAcme Corp\tacme\tfalse\n"
+                                     "0001-25-2\t31-OCT-2025\t4/A\t0000000007\tAcme Corp\tACME\t0\n")
+        z.writestr("REPORTINGOWNER.tsv", "ACCESSION_NUMBER\tRPTOWNERCIK\tRPTOWNERNAME\tRPTOWNER_RELATIONSHIP\tRPTOWNER_TITLE\n"
+                                         "0001-25-1\t0000000099\tDoe Jane\tDirector,Officer\tCFO\n"
+                                         "0001-25-2\t0000000098\tRoe Rick\tDirector\t\n")
+        z.writestr("NONDERIV_TRANS.tsv", "ACCESSION_NUMBER\tTRANS_DATE\tTRANS_CODE\tTRANS_SHARES\tTRANS_PRICEPERSHARE\tTRANS_ACQUIRED_DISP_CD\n"
+                                         "0001-25-1\t29-OCT-2025\tP\t1000\t25.5\tA\n"
+                                         "0001-25-1\t29-OCT-2025\tS\t500\t26\tD\n"
+                                         "0001-25-2\t29-OCT-2025\tP\t10\t25\tA\n")
+    df = bulk_insider.load_quarter(path)
+    assert len(df) == 1  # the sale and the amendment are left out
+    row = df.iloc[0]
+    assert (row["ticker"], row["issuer_cik"], row["insider_cik"], row["officer_title"]) == ("ACME", "0000000007", "0000000099", "CFO")
+    assert row["is_director"] and row["is_officer"] and not row["is_ten_pct"] and not row["planned_10b5_1"]
+    assert row["value"] == 25_500 and row["filed"] == date(2025, 10, 31) and row["tx_date"] == pd.Timestamp("2025-10-29")
