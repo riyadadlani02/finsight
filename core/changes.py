@@ -55,22 +55,27 @@ def split_paragraphs(text: str, min_chars: int = 80) -> list[str]:
     return [p for p in parts if len(p) >= min_chars]
 
 
-def _cosine(docs: list[str]):
-    return cosine_similarity(TfidfVectorizer(stop_words="english").fit_transform(docs))
+def _cosine(docs: list[str], language: str = "en"):
+    # Japanese has no spaces between words: compare 2-3 character fragments instead of words.
+    vec = TfidfVectorizer(analyzer="char", ngram_range=(2, 3)) if language == "ja" else TfidfVectorizer(stop_words="english")
+    return cosine_similarity(vec.fit_transform(docs))
 
 
-def diff_sections(old: str, new: str) -> SectionDiff:
+MIN_PARA = {"en": 80, "ja": 20}  # Japanese packs more into each character
+
+
+def diff_sections(old: str, new: str, language: str = "en") -> SectionDiff:
     try:
-        similarity = float(_cosine([old, new])[0, 1])
+        similarity = float(_cosine([old, new], language)[0, 1])
     except ValueError:  # one side has no words
         similarity = 0.0
     similarity = min(max(similarity, 0.0), 1.0)
-    old_p, new_p = split_paragraphs(old), split_paragraphs(new)
+    old_p, new_p = split_paragraphs(old, MIN_PARA[language]), split_paragraphs(new, MIN_PARA[language])
 
     # Greedy best-first matching: the most similar pairs claim each other first, each paragraph once.
     matched: dict[int, tuple[int, float]] = {}
     if old_p and new_p:
-        sims = _cosine(old_p + new_p)[len(old_p):, :len(old_p)]
+        sims = _cosine(old_p + new_p, language)[len(old_p):, :len(old_p)]
         used_old: set[int] = set()
         cand = np.argwhere(sims >= REWORDED)  # only plausible pairs: n*m tuples blew up on long sections
         for n, o in cand[np.argsort(-sims[cand[:, 0], cand[:, 1]], kind="stable")]:
@@ -92,18 +97,19 @@ def diff_sections(old: str, new: str) -> SectionDiff:
     return SectionDiff(similarity, round((1 - similarity) * 100), paras)
 
 
-def redline_html(old: str, new: str) -> str:
-    """Word-level diff with <del>/<ins>; every word is escaped."""
-    a, b = old.split(), new.split()
+def redline_html(old: str, new: str, language: str = "en") -> str:
+    """Word-level diff (character-level for Japanese) with <del>/<ins>; every token is escaped."""
+    a, b = (list(old), list(new)) if language == "ja" else (old.split(), new.split())
+    sep = "" if language == "ja" else " "
     out = []
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
         if op == "equal":
-            out.append(escape(" ".join(a[i1:i2])))
+            out.append(escape(sep.join(a[i1:i2])))
         if op in ("delete", "replace"):
-            out.append(f"<del>{escape(' '.join(a[i1:i2]))}</del>")
+            out.append(f"<del>{escape(sep.join(a[i1:i2]))}</del>")
         if op in ("insert", "replace"):
-            out.append(f"<ins>{escape(' '.join(b[j1:j2]))}</ins>")
-    return " ".join(out)
+            out.append(f"<ins>{escape(sep.join(b[j1:j2]))}</ins>")
+    return sep.join(out)
 
 
 # ------------------------------------------------------------ companies

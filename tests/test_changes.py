@@ -128,3 +128,26 @@ def test_sections_ignore_whole_filing_fallback(monkeypatch):
     monkeypatch.setattr(edgar, "filing_sections", lambda filing, max_chars: {"Risk Factors": "a", "MD&A": "b", "Other": "c"})
     assert set(changes.sections(f)) == {"Risk Factors", "MD&A"}
     changes._sections.cache_clear()
+
+
+# ---------------------------------------------------------------- Japanese text
+
+JA = ["当社グループの事業は、為替相場の変動により業績に影響を受ける可能性があります。特に米ドルに対する円高が進んだ場合には収益が減少します。",
+      "半導体部品の調達は特定の取引先に依存しており、供給が途絶した場合には生産に重大な影響を及ぼす可能性があります。",
+      "大規模な自然災害が発生した場合には、生産拠点の操業停止により業績に影響を及ぼす可能性があります。"]
+
+
+def test_japanese_identical_scores_zero():
+    d = changes.diff_sections("\n".join(JA), "\n".join(JA), language="ja")
+    assert d.change_score == 0 and d.counts["unchanged"] == 3
+
+
+def test_japanese_added_paragraph_detected():
+    new = JA + ["生成AIの急速な普及により、当社の主要製品に対する需要構造が大きく変化する可能性があります。"]
+    d = changes.diff_sections("\n".join(JA), "\n".join(new), language="ja")
+    assert d.counts == {"added": 1, "removed": 0, "reworded": 0, "unchanged": 3} and d.change_score > 0
+
+
+def test_japanese_redline_is_character_level_and_escaped():
+    out = changes.redline_html("円高<b>が</b>進む", "円安<script>が</script>進む", language="ja")
+    assert "<script" not in out and "&lt;" in out and "<del>高" in out and "<ins>安" in out  # no raw tag survives
