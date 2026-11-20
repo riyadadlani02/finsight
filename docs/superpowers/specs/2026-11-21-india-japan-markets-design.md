@@ -75,7 +75,7 @@ Benchmarks are total-return, like SPY, because stock closes are dividend-adjuste
 - **Sections.** Downloaded per report (cached), taking the business-risk and MD&A text blocks from the XBRL or CSV rendition; the exact element names come from the EDINET taxonomy (builder verifies on a real report and records them).
 - **Text scoring.** `changes.diff_sections` takes a `language`; for Japanese it uses character 2–3-gram TF-IDF, splits paragraphs on line breaks and 。-terminated blocks, and redlines by character. US scoring is unchanged.
 - **Backtest and cut-offs (builder's call, from review).** Mirrors the US: a hand-edited Nikkei 225 list (`core/universe_nikkei225.txt`, 4-digit codes) scored over its last six annual reports, about 1,350 report downloads, resumable. Japan's 20th/80th-percentile cut-offs come only from Japanese backtest scores, ranked within each filing year (character n-gram scores aren't on the US scale). Live Japan calls start once those exist. The headline is the gap between the least- and most-changed fifth, with the survivorship caveat.
-- **Debate.** The dossier uses the Japanese sections plus Yahoo market data (in yen); agents are told the filing is in Japanese and answer in English, quoting the original. XBRL financials for Japan are out of Phase 1 unless the CSV rendition makes them trivial (builder's call).
+- **Said vs did.** Promises are extracted from the Japanese MD&A and quoted in the original, with the verdict and explanation in English. XBRL financial checks for Japan are out of Phase 1 unless the CSV rendition makes them trivial (builder's call).
 
 ### India (NSE deals)
 
@@ -95,6 +95,17 @@ Benchmarks are total-return, like SPY, because stock closes are dividend-adjuste
 ### Tests
 
 Offline fixtures: an EDINET `documents.json` page and a small report rendition; the EDINET code list CSV; NSE `bulk.csv`/`block.csv` samples including a same-day churner; Japanese text through `diff_sections` (identical → 0, one added paragraph detected, character redline escapes HTML); per-market benchmark grading; the market migration on an old database.
+
+### Said vs did replaces Bull vs Bear (user decision, 2026-11-21)
+
+The two-agent debate is replaced by a management promise tracker, in every market that has filings.
+
+- **Extract.** From each of the last few annual reports' MD&A (and business-risk section where it states plans), Claude extracts concrete forward-looking promises: a target, a plan or a commitment with something checkable (a number, a date, a milestone). Each promise keeps its filing, section and quoted sentence. Vague aspirations ("we remain committed to growth") are not promises.
+- **Check.** For each promise whose deadline has passed, Claude reads the later reports and returns kept, missed, partly kept, or quietly dropped (never mentioned again), quoting the later sentence or saying none was found. Where the promise is a number that XBRL financials cover (US now; Japan when the CSV rendition has it), code checks the number and overrides Claude if they disagree. Promises not yet due are listed as open.
+- **Score.** Credibility = kept plus half of partly kept, over all resolved promises, shown with the counts and labelled "too few to judge" under 5 resolved promises.
+- **Signal.** A credibility score becomes a call (high → +1, low → −1, cut-offs from a backtest as for filing changes) so the track record grades whether management credibility predicts returns.
+- **Structured output and citations** as in the filing-change explanations: anything citing a filing or sentence not in the input is dropped.
+- **Page and cockpit.** The Bull vs Bear page and cockpit card become "Said vs did" (ledger view: year, promise, verdict, evidence). Past debates stay viewable read-only; debate calls already in the track record keep their history.
 
 ## Phase 2 (after Phase 1 ships; needs the vendor decision)
 
