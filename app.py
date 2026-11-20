@@ -54,4 +54,5 @@ st.navigation([
     st.Page(DEBATE, title="Bull vs Bear"),
     st.Page(RADAR, title="Insider radar"),
     st.Page(MULE, title="Mule ring detector"),
+    st.Page("views/4_Filing_Changes.py", title="Filing changes"),
 ], position="top").run()

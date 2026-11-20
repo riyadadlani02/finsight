@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import re
 from dataclasses import astuple, dataclass, field
 from datetime import date, timedelta
@@ -232,4 +233,7 @@ def explain(name: str, ticker: str, diffs: dict[str, SectionDiff], max_chars: in
         raise RuntimeError(f"Claude stopped early ({resp.stop_reason}) without an explanation.")
     valid = {(section, p.id) for section, d in diffs.items() for p in d.paras}
     items = json.loads(next(b.text for b in resp.content if b.type == "text"))["changes"]
-    return [c for c in items if (c["section"], c["id"]) in valid]
+    kept = [c for c in items if (c["section"], c["id"]) in valid]
+    if len(kept) < len(items):
+        logging.getLogger(__name__).warning("explain: dropped %d of %d items citing unknown ids", len(items) - len(kept), len(items))
+    return kept

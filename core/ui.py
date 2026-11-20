@@ -78,6 +78,12 @@ h1, h2, h3 {{ font-weight: 300 !important; letter-spacing: -0.03em; color: {INK}
 .fs-point h4 {{ margin: 0 0 .25rem; padding: 0; font-size: .95rem; font-weight: 600 !important; color: {INK}; }}
 .fs-point p, .fs-point li {{ margin: 0; font-size: .97rem; color: {INK}; }}
 
+/* Filing changes: paragraphs with their ids, and the word-level redline. */
+.fs-para {{ margin: 0 0 .7rem; line-height: 1.55; color: {INK}; max-width: 90ch; }}
+.fs-pid {{ display: inline-block; min-width: 2.6rem; color: {MUTED}; font-size: .75rem; font-weight: 600; }}
+.fs-para del {{ color: {BEAR}; text-decoration: line-through; }}
+.fs-para ins {{ color: {BULL}; text-decoration: none; background: rgba(92, 201, 167, .12); border-radius: 3px; }}
+
 @media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; animation: none !important; }} }}
 </style>
 """
