@@ -51,6 +51,24 @@ cluster_alerts = Table(
     Column("created_at", DateTime, server_default=func.now()),
 )
 
+# One row per 10-K section compared with the previous 10-K (core/changes.py).
+filing_changes = Table(
+    "filing_changes", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("issuer_cik", String(10), index=True),
+    Column("ticker", String(20), index=True),
+    Column("accession", String(25), nullable=False),
+    Column("prev_accession", String(25)),
+    Column("filed", Date, index=True),
+    Column("section", String(40), nullable=False),
+    Column("similarity", Float),
+    Column("change_score", Integer),
+    Column("added", Integer),
+    Column("removed", Integer),
+    Column("reworded", Integer),
+    UniqueConstraint("accession", "section", name="uq_filing_changes_section"),
+)
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),

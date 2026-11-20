@@ -83,15 +83,6 @@ def test_daily_index_and_facts(monkeypatch):
     assert out["Revenue"] == {"2024-12-31": 100, "2025-12-31": 120} and out["Total assets"] == {"2025-12-31": 900}
 
 
-@pytest.fixture
-def engine():
-    eng = create_engine(os.environ.get("TEST_DATABASE_URL", "sqlite://"))
-    db.metadata.drop_all(eng)
-    db.metadata.create_all(eng)
-    yield eng
-    db.metadata.drop_all(eng)
-
-
 def _buy(n, issuer, insider_id, days_ago, value, title="", planned=False, code="P"):
     return dict(accession=f"acc-{n}", line_no=0, issuer_cik=issuer, issuer_name=f"Co {issuer}", ticker=f"T{issuer}",
                 insider_cik=str(insider_id), insider_name=f"Insider {insider_id}", is_director=True, is_officer=bool(title),

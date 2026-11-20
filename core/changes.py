@@ -7,12 +7,19 @@ from __future__ import annotations
 
 import difflib
 import re
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
+from datetime import date, timedelta
+from functools import lru_cache
 from html import escape
-from typing import Literal
+from typing import Callable, Literal
 
+import pandas as pd
+import requests
+from sqlalchemy import insert, select
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from . import db, edgar
 
 UNCHANGED, REWORDED = 0.9, 0.5  # paragraph match thresholds (design doc)
 Kind = Literal["added", "removed", "reworded", "unchanged"]
@@ -39,8 +46,8 @@ class SectionDiff:
 
 
 def split_paragraphs(text: str, min_chars: int = 80) -> list[str]:
-    """Blank-line separated blocks, whitespace collapsed; short ones (headings, page furniture) dropped."""
-    parts = (re.sub(r"\s+", " ", p).strip() for p in re.split(r"\n\s*\n", text))
+    """One paragraph per line (EDGAR text has no blank lines), whitespace collapsed; short lines dropped."""
+    parts = (re.sub(r"\s+", " ", p).strip() for p in text.split("\n"))
     return [p for p in parts if len(p) >= min_chars]
 
 
@@ -94,3 +101,93 @@ def redline_html(old: str, new: str) -> str:
         if op in ("insert", "replace"):
             out.append(f"<ins>{escape(' '.join(b[j1:j2]))}</ins>")
     return " ".join(out)
+
+
+# ------------------------------------------------------------ companies
+
+@dataclass
+class YearChange:
+    accession: str
+    prev_accession: str
+    filed: str
+    scores: dict[str, int]
+    combined: int  # mean of the sections found in both years
+
+
+@lru_cache(maxsize=48)  # ponytail: in-process cache of full section text; a disk cache if reruns get slow
+def _sections(key: tuple) -> dict[str, str]:
+    return edgar.filing_sections(edgar.Filing(*key), max_chars=10**7)
+
+
+def sections(filing: edgar.Filing) -> dict[str, str]:
+    """Risk Factors and MD&A of one filing, untruncated."""
+    return _sections(astuple(filing))
+
+
+def _annual(ticker: str, years: int) -> tuple[dict, list[edgar.Filing]]:
+    company = edgar.lookup(ticker)
+    filings = edgar.recent_filings(company["cik"], ("10-K",), limit=years)
+    if len(filings) < 2:
+        raise edgar.EdgarError(f"{ticker.strip().upper()} has fewer than two 10-K filings on EDGAR.")
+    return company, filings[::-1]  # oldest first
+
+
+def _diffs(old: edgar.Filing, new: edgar.Filing) -> dict[str, SectionDiff]:
+    a, b = sections(old), sections(new)
+    return {name: diff_sections(a[name], b[name]) for name in b if name in a}
+
+
+def score_company(ticker: str, years: int = 6, engine=None) -> list[YearChange]:
+    """Change scores for each consecutive pair of the last `years` 10-Ks, oldest first. Stored once per filing."""
+    engine = engine or db.engine()
+    company, filings = _annual(ticker, years)
+    t = db.filing_changes
+    out = []
+    for old, new in zip(filings, filings[1:]):
+        with engine.connect() as conn:
+            stored = {r.section: r.change_score for r in conn.execute(select(t).where(t.c.accession == new.accession))}
+        if not stored:
+            diffs = _diffs(old, new)
+            stored = {name: d.change_score for name, d in diffs.items()}
+            with engine.begin() as conn:
+                for name, d in diffs.items():
+                    conn.execute(insert(t).values(
+                        issuer_cik=company["cik"], ticker=ticker.strip().upper(), accession=new.accession,
+                        prev_accession=old.accession, filed=date.fromisoformat(new.filed), section=name,
+                        similarity=d.similarity, change_score=d.change_score,
+                        added=d.counts["added"], removed=d.counts["removed"], reworded=d.counts["reworded"]))
+        if stored:  # neither section found in both years: nothing to compare
+            out.append(YearChange(new.accession, old.accession, new.filed, stored,
+                                  round(sum(stored.values()) / len(stored))))
+    return out
+
+
+def latest(ticker: str) -> dict:
+    """The newest 10-K against the one before, with paragraph-level diffs per section."""
+    company, filings = _annual(ticker, 2)
+    old, new = filings[-2], filings[-1]
+    return {"name": company["name"], "ticker": ticker.strip().upper(), "new": new, "old": old, "diffs": _diffs(old, new)}
+
+
+def screen(days: int, engine=None, progress: Callable[[int, int], None] | None = None) -> pd.DataFrame:
+    """Every company that filed a 10-K in the last `days` days, ranked by how much it changed."""
+    names = {v["cik"]: (k, v["name"]) for k, v in edgar.ticker_map().items()}
+    ciks = list(dict.fromkeys(cik for n in range(days)
+                              for cik, _, _ in edgar.daily_index(date.today() - timedelta(days=n), "10-K")))
+    rows = []
+    for i, cik in enumerate(ciks, 1):
+        if cik in names:
+            ticker, name = names[cik]
+            try:
+                ys = score_company(ticker, years=2, engine=engine)
+            except (edgar.EdgarError, requests.RequestException):
+                ys = []
+            if ys:
+                y = ys[-1]
+                rows.append({"ticker": ticker, "name": name, "filed": y.filed, "combined": y.combined,
+                             "risk_factors": y.scores.get("Risk Factors"), "mdna": y.scores.get("MD&A"),
+                             "accession": y.accession})
+        if progress:
+            progress(i, len(ciks))
+    cols = ["ticker", "name", "filed", "combined", "risk_factors", "mdna", "accession"]
+    return pd.DataFrame(rows, columns=cols).sort_values("combined", ascending=False).reset_index(drop=True)

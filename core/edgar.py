@@ -276,19 +276,25 @@ def fetch_form4(txt_url: str, accession: str) -> list[dict]:
     return parse_form4(_get(txt_url).text, accession)
 
 
-def daily_form4_index(day: date) -> list[tuple[str, str]]:
-    """[(accession, txt_url)] for every Form 4 filed on `day` (empty on weekends/holidays)."""
+def daily_index(day: date, form: str) -> list[tuple[str, str, str]]:
+    """[(cik10, accession, txt_url)] for every filing of exactly `form` on `day` (empty on weekends/holidays)."""
     quarter = (day.month - 1) // 3 + 1
     url = f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/QTR{quarter}/form.{day:%Y%m%d}.idx"
     try:
         text = _get(url).text
     except (EdgarError, requests.HTTPError):
         return []
-    seen: dict[str, str] = {}
+    seen: dict[str, tuple[str, str, str]] = {}
     for line in text.splitlines():
-        if not line.startswith("4 "):  # exactly form type "4", not 4/A or 424B
-            continue
-        path = line.split()[-1]  # edgar/data/<cik>/<accession>.txt
+        parts = line.split()
+        if not parts or parts[0] != form or not parts[-1].startswith("edgar/data/"):
+            continue  # exact form only: "4" excludes 4/A and 424B, "10-K" excludes 10-K/A
+        path = parts[-1]  # edgar/data/<cik>/<accession>.txt
         accession = path.rsplit("/", 1)[-1].removesuffix(".txt")
-        seen.setdefault(accession, f"https://www.sec.gov/Archives/{path}")  # listed once per filer
-    return list(seen.items())
+        seen.setdefault(accession, (path.split("/")[2].zfill(10), accession, f"https://www.sec.gov/Archives/{path}"))
+    return list(seen.values())  # a filing is listed once per filer; keep the first
+
+
+def daily_form4_index(day: date) -> list[tuple[str, str]]:
+    """[(accession, txt_url)] for every Form 4 filed on `day`."""
+    return [(accession, url) for _, accession, url in daily_index(day, "4")]
