@@ -1,0 +1,33 @@
+[server]
+maxUploadSize = 1024
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+# Ledger paper, slate ink, SEC ultramarine; teal = bull, claret = bear.
+[theme]
+base = "light"
+primaryColor = "#2340C4"
+backgroundColor = "#F2F4F1"
+secondaryBackgroundColor = "#E5EAE6"
+textColor = "#17212B"
+linkColor = "#2340C4"
+borderColor = "#D3DAD6"
+dataframeBorderColor = "#D3DAD6"
+dataframeHeaderBackgroundColor = "#E5EAE6"
+greenColor = "#17705A"
+redColor = "#B0303F"
+font = "Public Sans:https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,300..900;1,300..900&display=swap"
+headingFontWeights = [800, 700, 700]
+headingFontSizes = ["2.6rem", "1.6rem", "1.2rem"]
+baseRadius = "4px"
+buttonRadius = "4px"
+chartCategoricalColors = ["#2340C4", "#17705A", "#B0303F", "#8A6A1F", "#5D4BA8", "#56656D"]
+
+[theme.sidebar]
+backgroundColor = "#E5EAE6"
+secondaryBackgroundColor = "#F2F4F1"

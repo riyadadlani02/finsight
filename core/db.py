@@ -1,0 +1,84 @@
+"""PostgreSQL schema and engine. Any SQLAlchemy URL works (tests use SQLite)."""
+from functools import lru_cache
+
+from sqlalchemy import (
+    Boolean, Column, Date, DateTime, Float, Integer, MetaData, String, Table, Text,
+    UniqueConstraint, create_engine, func,
+)
+
+from . import config
+
+metadata = MetaData()
+
+# One row per open-market line item on a Form 4.
+insider_tx = Table(
+    "insider_tx", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("accession", String(25), nullable=False),
+    Column("line_no", Integer, nullable=False),
+    Column("issuer_cik", String(10), index=True),
+    Column("issuer_name", String(200)),
+    Column("ticker", String(20), index=True),
+    Column("insider_cik", String(10)),
+    Column("insider_name", String(200)),
+    Column("is_director", Boolean),
+    Column("is_officer", Boolean),
+    Column("is_ten_pct", Boolean),
+    Column("officer_title", String(200)),
+    Column("tx_date", Date, index=True),
+    Column("code", String(2)),            # P = open-market purchase, S = sale, ...
+    Column("acquired", Boolean),          # True = acquired, False = disposed
+    Column("shares", Float),
+    Column("price", Float),
+    Column("value", Float),
+    Column("shares_after", Float),
+    Column("ownership", String(1)),       # D direct / I indirect
+    Column("planned_10b5_1", Boolean),
+    UniqueConstraint("accession", "line_no", name="uq_insider_tx_line"),
+)
+
+# Every Form 4 we've already fetched, so re-scans skip it.
+filings_seen = Table(
+    "filings_seen", metadata,
+    Column("accession", String(25), primary_key=True),
+    Column("fetched_at", DateTime, server_default=func.now()),
+)
+
+# Clusters that have already been pushed to the webhook.
+cluster_alerts = Table(
+    "cluster_alerts", metadata,
+    Column("key", String(80), primary_key=True),
+    Column("created_at", DateTime, server_default=func.now()),
+)
+
+debates = Table(
+    "debates", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("ticker", String(20), index=True),
+    Column("created_at", DateTime, server_default=func.now()),
+    Column("model", String(80)),
+    Column("winner", String(10)),
+    Column("bull_score", Integer),
+    Column("bear_score", Integer),
+    Column("verdict_json", Text),
+    Column("transcript_json", Text),
+)
+
+
+@lru_cache(maxsize=4)
+def engine(url: str | None = None):
+    url = url or config.database_url()
+    args = {"connect_timeout": 5} if url.startswith("postgresql") else {}
+    eng = create_engine(url, pool_pre_ping=True, connect_args=args)
+    metadata.create_all(eng)
+    return eng
+
+
+def check() -> tuple[bool, str]:
+    """(ok, message) — used by pages to show a clear error instead of a traceback."""
+    try:
+        with engine().connect():
+            return True, "connected"
+    except Exception as exc:  # noqa: BLE001 - surfaced to the user
+        engine.cache_clear()
+        return False, str(exc).splitlines()[0]

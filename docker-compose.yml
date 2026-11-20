@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: finsight
+      POSTGRES_PASSWORD: finsight
+      POSTGRES_DB: finsight
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finsight"]
+      interval: 5s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/finsight-neo4j
+    ports: ["7474:7474", "7687:7687"]
+    volumes: ["neo4jdata:/data"]
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      # Inside the compose network the databases are reached by service name.
+      DATABASE_URL: postgresql+psycopg://finsight:finsight@postgres:5432/finsight
+      NEO4J_URI: bolt://neo4j:7687
+    ports: ["8501:8501"]
+    volumes: ["./data:/app/data"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      neo4j: {condition: service_started}
+
+volumes:
+  pgdata:
+  neo4jdata:
