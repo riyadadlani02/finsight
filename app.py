@@ -57,5 +57,6 @@ st.navigation([
     st.Page(RADAR, title="Insider radar"),
     st.Page(CHANGES, title="Filing changes"),
     st.Page(RECORD, title="Track record"),
+    st.Page("views/6_Deals_Radar.py", title="Deals radar (India)"),
     st.Page(MULE, title="Mule ring detector"),
 ], position="top").run()

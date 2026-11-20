@@ -107,31 +107,37 @@ def load_deals(engine=None, since: date | None = None) -> pd.DataFrame:
     return df
 
 
-def deal_signals(deals: pd.DataFrame, min_net_value: float = MIN_NET_VALUE, min_clients: int = MIN_CLIENTS,
-                 cooldown_days: int = COOLDOWN_DAYS) -> pd.DataFrame:
-    """Days where clients that didn't churn net-bought (+1) or net-sold (-1) a stock in size."""
-    cols = ["symbol", "ticker", "name", "date", "direction", "net_value", "clients", "churners"]
-    days = []
+def day_summary(deals: pd.DataFrame, min_net_value: float = MIN_NET_VALUE, min_clients: int = MIN_CLIENTS) -> pd.DataFrame:
+    """Every stock and day: net value from clients that didn't churn, how many bought or sold, and the signal (+1/-1/0)."""
+    cols = ["date", "name", "net_value", "symbol", "ticker", "buyers", "sellers", "churners", "signal", "clients", "churner_names"]
+    rows = []
     for (day, symbol), g in deals.groupby(["date", "symbol"]):
         sides = g.groupby("client")["side"].nunique()
         churners = sorted(sides[sides > 1].index)   # bought and sold the same day: trading, not conviction
         kept = g[~g["client"].isin(churners)]
         per_client = kept["value"].where(kept["side"] == "BUY", -kept["value"]).groupby(kept["client"]).sum()
-        net = float(per_client.sum())
-        if net >= min_net_value and (per_client > 0).sum() >= min_clients:
-            direction, clients = 1, sorted(per_client[per_client > 0].index)
-        elif -net >= min_net_value and (per_client < 0).sum() >= min_clients:
-            direction, clients = -1, sorted(per_client[per_client < 0].index)
-        else:
-            continue
-        days.append({"symbol": symbol, "ticker": f"{symbol}.NS", "name": g["name"].iloc[0], "date": day,
-                     "direction": direction, "net_value": net, "clients": clients, "churners": churners})
+        net, buyers, sellers = float(per_client.sum()), int((per_client > 0).sum()), int((per_client < 0).sum())
+        signal = 1 if net >= min_net_value and buyers >= min_clients else -1 if -net >= min_net_value and sellers >= min_clients else 0
+        side = per_client > 0 if signal >= 0 else per_client < 0
+        rows.append({"date": day, "name": g["name"].iloc[0], "net_value": net, "symbol": symbol, "ticker": f"{symbol}.NS",
+                     "buyers": buyers, "sellers": sellers, "churners": len(churners), "signal": signal,
+                     "clients": sorted(per_client[side].index), "churner_names": churners})
+    return pd.DataFrame(rows, columns=cols)
+
+
+def deal_signals(deals: pd.DataFrame, min_net_value: float = MIN_NET_VALUE, min_clients: int = MIN_CLIENTS,
+                 cooldown_days: int = COOLDOWN_DAYS) -> pd.DataFrame:
+    """Days where clients that didn't churn net-bought (+1) or net-sold (-1) a stock in size; one per run."""
+    cols = ["symbol", "ticker", "name", "date", "direction", "net_value", "clients", "churners"]
+    days = day_summary(deals, min_net_value, min_clients)
     out, last = [], {}
-    for d in sorted(days, key=lambda r: r["date"]):
-        k = (d["symbol"], d["direction"])
+    for d in days[days["signal"] != 0].sort_values("date").to_dict("records"):
+        k = (d["symbol"], d["signal"])
         if k in last and (d["date"] - last[k]).days < cooldown_days:
             continue
-        out.append(d)
+        out.append({"symbol": d["symbol"], "ticker": d["ticker"], "name": d["name"], "date": d["date"],
+                    "direction": d["signal"], "net_value": d["net_value"], "clients": d["clients"],
+                    "churners": d["churner_names"]})
         last[k] = d["date"]
     return pd.DataFrame(out, columns=cols)
 

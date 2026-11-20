@@ -107,3 +107,11 @@ def test_deal_signals_become_live_calls(engine, monkeypatch):
     calls = track.load_calls(engine).set_index("ticker")
     assert calls.loc["ACME.NS", "market"] == "IN" and calls.loc["ACME.NS", "kind"] == "deal"
     assert calls.loc["DUMP.NS", "direction"] == -1 and calls.loc["ACME.NS", "source_ref"] == "ACME:2026-11-20"
+
+
+def test_day_summary_shows_every_stock_and_why():
+    s = india.day_summary(india.parse_deals(BULK, "bulk")).set_index("symbol")
+    assert list(s.columns[:3]) == ["date", "name", "net_value"]
+    assert (s.loc["ACME", "buyers"], s.loc["ACME", "churners"], s.loc["ACME", "signal"]) == (2, 1, 1)
+    assert (s.loc["SOLO", "net_value"], s.loc["SOLO", "buyers"], s.loc["SOLO", "signal"]) == (100_000_000.0, 1, 0)
+    assert s.loc["DUMP", "signal"] == -1

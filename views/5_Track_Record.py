@@ -11,8 +11,9 @@ ui.header("Track record", "Every debate verdict, insider cluster and filing chan
 
 LABELS = {("debate", 1): "Bull wins a debate", ("debate", -1): "Bear wins a debate",
           ("insider_cluster", 1): "Insider cluster buy",
-          ("filing_change", 1): "10-K barely changed (expect to beat SPY)",
-          ("filing_change", -1): "10-K changed a lot (expect to lag SPY)"}
+          ("filing_change", 1): "10-K barely changed (expect to beat the market)",
+          ("filing_change", -1): "10-K changed a lot (expect to lag the market)",
+          ("deal", 1): "Big deal buying (India)", ("deal", -1): "Big deal selling (India)"}
 
 
 def pct(x: float) -> str:
@@ -28,7 +29,7 @@ def graded_calls(mode: str, today: date) -> pd.DataFrame:
     calls = track.load_calls(mode=mode)
     if calls.empty:
         return calls
-    closes = prices.closes(sorted(set(calls["ticker"])) + [track.BENCHMARK],
+    closes = prices.closes(sorted(set(calls["ticker"])) + track.benchmarks_for(calls),
                            min(calls["public_date"]) - timedelta(days=7))
     return track.grade(calls, closes, today)
 
@@ -37,7 +38,7 @@ def graded_calls(mode: str, today: date) -> pd.DataFrame:
 def curve(mode: str, kind: str, today: date) -> pd.DataFrame:
     calls = track.load_calls(mode=mode)
     calls = calls[calls["kind"] == kind]
-    closes = prices.closes(sorted(set(calls["ticker"])) + [track.BENCHMARK], min(calls["public_date"]) - timedelta(days=7))
+    closes = prices.closes(sorted(set(calls["ticker"])) + track.benchmarks_for(calls), min(calls["public_date"]) - timedelta(days=7))
     return track.event_curve(calls, closes)
 
 
@@ -72,14 +73,14 @@ else:
     rows = [{"Signal": LABELS.get((r.kind, r.direction), f"{r.kind} {r.direction:+d}"), "Calls": r.n, "Months": r.months,
              "Hit rate": "n/a" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}",
              "Hit rate 95%": "needs 2+ months" if pd.isna(r.hit_lo) else f"{r.hit_lo:.0%} to {r.hit_hi:.0%}",
-             "Mean vs SPY": pct(r.mean), "Mean 95%": interval(r.mean_lo, r.mean_hi), "Median": pct(r.median),
+             "Mean vs market": pct(r.mean), "Mean 95%": interval(r.mean_lo, r.mean_hi), "Median": pct(r.median),
              "Median 95%": interval(r.median_lo, r.median_hi),
              "Verdict": "Too few to judge" if r.too_few else ""} for r in board.itertuples()]
     with ui.panel("board"):
         st.subheader(f"{horizon}-day results, {mode} calls")
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         pending = int((graded[f"status_{horizon}"] == "pending").sum())
-        st.caption(f"A hit means the stock moved against SPY the way the signal said. Intervals resample whole months, "
+        st.caption(f"Each call is graded against its own market: S&P 500 (US), Nifty 50 (India), TOPIX (Japan). A hit means the stock beat or lagged it the way the signal said. Intervals resample whole months, "
                    f"because calls in the same month share one market. {pending:,} calls are still inside their "
                    f"{horizon}-day window. {int(board['dropped'].sum()):,} calls had no price data (often delisted "
                    "companies) and are left out, which flatters results a little.")
@@ -93,7 +94,7 @@ else:
     else:
         data = c.reset_index().assign(mean=lambda d: d["mean"] * 100, lo=lambda d: d["lo"] * 100, hi=lambda d: d["hi"] * 100)
         band = alt.Chart(data).mark_area(opacity=.18, color=ui.LINE).encode(
-            x=alt.X("day:Q", title="Trading days after the call"), y=alt.Y("lo:Q", title="Excess return vs SPY (%)"), y2="hi:Q")
+            x=alt.X("day:Q", title="Trading days after the call"), y=alt.Y("lo:Q", title="Excess return vs its market (%)"), y2="hi:Q")
         line = alt.Chart(data).mark_line(color=ui.LINE, strokeWidth=2).encode(x="day:Q", y="mean:Q")
         zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=ui.MUTED, strokeDash=[3, 3]).encode(y="y:Q")
         st.altair_chart((band + line + zero).properties(height=260), width="stretch")
@@ -104,7 +105,7 @@ else:
         st.dataframe(view.sort_values("public_date", ascending=False), hide_index=True, width="stretch",
                      column_order=["public_date", "kind", "ticker", "direction", "strength", f"excess_{horizon}",
                                    f"status_{horizon}", "source"],
-                     column_config={f"excess_{horizon}": st.column_config.NumberColumn("excess vs SPY", format="percent"),
+                     column_config={f"excess_{horizon}": st.column_config.NumberColumn("excess vs market", format="percent"),
                                     "source": st.column_config.LinkColumn(display_text="Open")})
 
 with st.expander("Run backtests"):
