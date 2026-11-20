@@ -21,7 +21,7 @@ from sqlalchemy import insert, select
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from . import config, db, debate, edgar
+from . import config, db, debate, edgar, track
 
 UNCHANGED, REWORDED = 0.9, 0.5  # paragraph match thresholds (design doc)
 Kind = Literal["added", "removed", "reworded", "unchanged"]
@@ -144,6 +144,7 @@ def score_company(ticker: str, years: int = 6, engine=None) -> list[YearChange]:
     engine = engine or db.engine()
     company, filings = _annual(ticker, years)
     t = db.filing_changes
+    cutoffs = track.filing_cutoffs(engine)
     out = []
     for old, new in zip(filings, filings[1:]):
         with engine.connect() as conn:
@@ -158,6 +159,10 @@ def score_company(ticker: str, years: int = 6, engine=None) -> list[YearChange]:
                         prev_accession=old.accession, filed=date.fromisoformat(new.filed), section=name,
                         similarity=d.similarity, change_score=d.change_score,
                         added=d.counts["added"], removed=d.counts["removed"], reworded=d.counts["reworded"]))
+            if stored and cutoffs:
+                combined = round(sum(stored.values()) / len(stored))
+                track.record("filing_change", ticker, track.filing_direction(combined, cutoffs), combined,
+                             date.fromisoformat(new.filed), new.accession, issuer_cik=company["cik"], engine=engine)
         if stored:  # neither section found in both years: nothing to compare
             out.append(YearChange(new.accession, old.accession, new.filed, stored,
                                   round(sum(stored.values()) / len(stored))))

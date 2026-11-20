@@ -7,13 +7,14 @@ Every agent sees the same dossier and is told to argue only from it.
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Iterator
 
 import anthropic
 import yfinance as yf
 from sqlalchemy import insert, select
 
-from . import config, db, edgar
+from . import config, db, edgar, track
 
 DISCLAIMER = "Research aid only. AI-generated argument, not investment advice."
 
@@ -196,10 +197,13 @@ def judge(dossier: dict, transcript: list[dict]) -> dict:
 
 def save(dossier: dict, transcript: list[dict], verdict: dict) -> None:
     with db.engine().begin() as conn:
-        conn.execute(insert(db.debates).values(
+        result = conn.execute(insert(db.debates).values(
             ticker=dossier["ticker"], model=config.claude_model(), winner=verdict["winner"],
             bull_score=verdict["bull_score"], bear_score=verdict["bear_score"],
             verdict_json=json.dumps(verdict), transcript_json=json.dumps(transcript)))
+    direction = {"bull": 1, "bear": -1}.get(verdict["winner"], 0)
+    track.record("debate", dossier["ticker"], direction, abs(verdict["bull_score"] - verdict["bear_score"]),
+                 date.today(), str(result.inserted_primary_key[0]))
 
 
 def history(limit: int = 50) -> list[dict]:

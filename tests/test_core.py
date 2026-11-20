@@ -5,9 +5,9 @@ from datetime import date, timedelta
 
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine, insert
+from sqlalchemy import create_engine, insert, inspect, select, text
 
-from core import db, debate, edgar, insider
+from core import db, debate, edgar, insider, track
 from core.mule import data, gnn, graph
 
 FORM4 = """<SEC-DOCUMENT>junk<XML>
@@ -117,6 +117,8 @@ def test_ingest_is_idempotent(engine, monkeypatch):
     monkeypatch.setattr(edgar, "fetch_form4", lambda url, acc: edgar.parse_form4(FORM4, acc))
     assert insider.scan_market(2, engine) == 2
     assert insider.scan_market(2, engine) == 0
+    with engine.connect() as conn:
+        assert {r[0] for r in conn.execute(select(db.insider_tx.c.filed))} == {date.today()}
 
 
 def test_debate_dossier_and_history(engine, monkeypatch):
@@ -136,6 +138,8 @@ def test_debate_dossier_and_history(engine, monkeypatch):
     verdict = {"winner": "bear", "bull_score": 60, "bear_score": 70}
     debate.save(d, [{"speaker": "bull", "round": "opening", "text": "hi"}], verdict)
     assert debate.history()[0]["winner"] == "bear"
+    (call,) = track.load_calls(engine).itertuples()
+    assert (call.kind, call.ticker, call.direction, call.strength) == ("debate", "ACME", -1, 10)
 
 
 def test_mule_pipeline_finds_planted_rings():
@@ -183,3 +187,25 @@ def test_theme_tokens():
     assert "backdrop-filter" in ui.CSS and "Manrope" in ui.CSS and "#1B262D" in ui.CSS
     # primaryColor is near-white, so primary buttons need dark text to stay readable
     assert '[data-testid^="stBaseButton-primary"]' in ui.CSS
+
+
+def test_cluster_events_dated_by_filing():
+    def buy(insider_id, tx, filed):
+        return dict(issuer_cik="0000000007", ticker="ACME", issuer_name="Acme", insider_cik=str(insider_id),
+                    insider_name=f"Insider {insider_id}", officer_title="", tx_date=pd.Timestamp(tx), value=50_000.0,
+                    filed=date.fromisoformat(filed))
+    rows = [buy(1, "2026-11-02", "2026-11-04"), buy(2, "2026-11-03", "2026-11-05"), buy(3, "2026-11-04", "2026-11-09")]
+    events = insider.cluster_events(pd.DataFrame(rows))
+    assert len(events) == 1 and events.iloc[0]["public_date"] == date(2026, 11, 9)
+    assert events.iloc[0]["insiders"] == 3 and events.iloc[0]["first_buy"] == date(2026, 11, 2)
+    more = insider.cluster_events(pd.DataFrame(rows + [buy(4, "2026-11-10", "2026-11-11")]))
+    assert len(more) == 1  # same cluster growing is not a new event
+
+
+def test_filed_column_migration(tmp_path):
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    with create_engine(url).begin() as conn:  # insider_tx as it was before the filed column existed
+        conn.execute(text("CREATE TABLE insider_tx (id INTEGER PRIMARY KEY, accession VARCHAR(25) NOT NULL, "
+                          "line_no INTEGER NOT NULL, tx_date DATE)"))
+    eng = db.engine(url)
+    assert "filed" in {c["name"] for c in inspect(eng).get_columns("insider_tx")}

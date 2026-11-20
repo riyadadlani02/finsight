@@ -3,7 +3,7 @@ from functools import lru_cache
 
 from sqlalchemy import (
     Boolean, Column, Date, DateTime, Float, Integer, MetaData, String, Table, Text,
-    UniqueConstraint, create_engine, func,
+    UniqueConstraint, create_engine, func, inspect, text,
 )
 
 from . import config
@@ -34,6 +34,7 @@ insider_tx = Table(
     Column("shares_after", Float),
     Column("ownership", String(1)),       # D direct / I indirect
     Column("planned_10b5_1", Boolean),
+    Column("filed", Date),                # Form 4 filing date: when the trade became public
     UniqueConstraint("accession", "line_no", name="uq_insider_tx_line"),
 )
 
@@ -116,6 +117,10 @@ def engine(url: str | None = None):
     args = {"connect_timeout": 5} if url.startswith("postgresql") else {}
     eng = create_engine(url, pool_pre_ping=True, connect_args=args)
     metadata.create_all(eng)
+    # create_all never alters an existing table; add columns introduced after a database was created.
+    if "filed" not in {c["name"] for c in inspect(eng).get_columns("insider_tx")}:
+        with eng.begin() as conn:
+            conn.execute(text("ALTER TABLE insider_tx ADD COLUMN filed DATE"))
     return eng
 
 

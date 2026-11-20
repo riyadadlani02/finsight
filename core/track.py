@@ -148,3 +148,20 @@ def event_curve(calls: pd.DataFrame, closes: pd.DataFrame, days: int = 180) -> p
             out.loc[d, ["lo", "hi"]] = block_ci(col[keep], month_s[keep], n=500)
     out[["lo", "hi"]] = out[["lo", "hi"]].interpolate(limit_area="inside")
     return out
+
+
+def filing_cutoffs(engine=None) -> tuple[float, float] | None:
+    """20th and 80th percentiles of backtest filing-change scores; live calls use these, never a screen's own spread."""
+    t = db.calls
+    with (engine or db.engine()).connect() as conn:
+        s = [r[0] for r in conn.execute(select(t.c.strength).where(t.c.kind == "filing_change", t.c.mode == "backtest"))]
+    if not s:
+        return None
+    lo, hi = np.percentile(s, [20, 80])
+    return float(lo), float(hi)
+
+
+def filing_direction(score: float, cutoffs: tuple[float, float]) -> int:
+    """Lazy Prices: big changers underperform (-1), near-identical filings outperform (+1)."""
+    lo, hi = cutoffs
+    return -1 if score >= hi else 1 if score <= lo else 0

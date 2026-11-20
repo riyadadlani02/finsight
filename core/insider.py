@@ -25,24 +25,26 @@ Progress = Callable[[int, int], None]
 
 # -------------------------------------------------------------- ingestion
 
-def _store(engine, accession: str, rows: list[dict]) -> int:
+def _store(engine, accession: str, rows: list[dict], filed: date | None = None) -> int:
     with engine.begin() as conn:
         if conn.execute(select(db.filings_seen.c.accession).where(db.filings_seen.c.accession == accession)).first():
             return 0
         conn.execute(insert(db.filings_seen).values(accession=accession))
         if rows:
-            conn.execute(insert(db.insider_tx), rows)
+            conn.execute(insert(db.insider_tx), [{**r, "filed": filed} for r in rows])
     return len(rows)
 
 
-def _ingest(engine, todo: list[tuple[str, str]], progress: Progress | None) -> int:
-    """Fetch and store [(accession, txt_url)], skipping ones already seen."""
+def _ingest(engine, todo: list[tuple[str, str, date]], progress: Progress | None) -> int:
+    """Fetch and store [(accession, txt_url, filed)], skipping ones already seen."""
     with engine.connect() as conn:
         seen = {r[0] for r in conn.execute(select(db.filings_seen.c.accession))}
     todo = [t for t in todo if t[0] not in seen]
 
+    filed = {t[0]: t[2] for t in todo}
+
     def fetch(item):
-        accession, url = item
+        accession, url, _ = item
         try:
             return accession, edgar.fetch_form4(url, accession)
         except (edgar.EdgarError, requests.RequestException):
@@ -52,7 +54,7 @@ def _ingest(engine, todo: list[tuple[str, str]], progress: Progress | None) -> i
     with ThreadPoolExecutor(max_workers=4) as pool:  # edgar._get throttles globally
         for i, (accession, rows) in enumerate(pool.map(fetch, todo), 1):
             if rows is not None:
-                stored += _store(engine, accession, rows)
+                stored += _store(engine, accession, rows, filed[accession])
             if progress:
                 progress(i, len(todo))
     return stored
@@ -61,10 +63,13 @@ def _ingest(engine, todo: list[tuple[str, str]], progress: Progress | None) -> i
 def scan_market(days: int = 3, engine=None, progress: Progress | None = None) -> int:
     """Ingest every Form 4 filed in the last `days` days. ~1-2k filings per trading day."""
     engine = engine or db.engine()
-    todo: list[tuple[str, str]] = []
+    todo: list[tuple[str, str, date]] = []
     for offset in range(days):
-        todo += edgar.daily_form4_index(date.today() - timedelta(days=offset))
-    return _ingest(engine, todo, progress)
+        day = date.today() - timedelta(days=offset)
+        todo += [(accession, url, day) for accession, url in edgar.daily_form4_index(day)]
+    stored = _ingest(engine, todo, progress)
+    record_live_calls(engine)
+    return stored
 
 
 def scan_tickers(tickers: list[str], per_ticker: int = 60, engine=None, progress: Progress | None = None) -> int:
@@ -73,8 +78,11 @@ def scan_tickers(tickers: list[str], per_ticker: int = 60, engine=None, progress
     todo = []
     for ticker in tickers:
         cik = edgar.lookup(ticker)["cik"]
-        todo += [(f.accession, f.txt_url) for f in edgar.recent_filings(cik, ("4",), per_ticker)]
-    return _ingest(engine, todo, progress)
+        todo += [(f.accession, f.txt_url, date.fromisoformat(f.filed))
+                 for f in edgar.recent_filings(cik, ("4",), per_ticker)]
+    stored = _ingest(engine, todo, progress)
+    record_live_calls(engine)
+    return stored
 
 
 # -------------------------------------------------------------- detection
@@ -142,6 +150,45 @@ def find_clusters(purchases: pd.DataFrame, window_days: int = 30, min_insiders: 
         })
     result = pd.DataFrame(out, columns=cols)
     return result.sort_values("score", ascending=False).reset_index(drop=True)
+
+
+def cluster_events(purchases: pd.DataFrame, window_days: int = 30, min_insiders: int = 3,
+                   min_total_value: float = 100_000) -> pd.DataFrame:
+    """Each moment a cluster became visible to the public, for grading without hindsight.
+
+    On every filing date, look back `window_days` of trades that had been filed by then; the
+    first date the thresholds are met is the event. The issuer can't fire again until the window
+    has passed, so a cluster that keeps growing is one event.
+    """
+    cols = ["issuer_cik", "ticker", "public_date", "first_buy", "insiders", "total_value", "score"]
+    if purchases.empty or "filed" not in purchases:
+        return pd.DataFrame(columns=cols)
+    df = purchases.dropna(subset=["filed"]).assign(tx_date=lambda d: pd.to_datetime(d["tx_date"]),
+                                                   filed=lambda d: pd.to_datetime(d["filed"]))
+    window, out = pd.Timedelta(days=window_days), []
+    for issuer_cik, g in df.groupby("issuer_cik"):
+        last = None
+        for day in sorted(g["filed"].unique()):
+            if last is not None and day - last < window:
+                continue
+            seen = g[(g["filed"] <= day) & (g["tx_date"] > day - window) & (g["tx_date"] <= day)]
+            if seen["insider_cik"].nunique() < min_insiders or seen["value"].sum() < min_total_value:
+                continue
+            scored = find_clusters(seen, window_days, min_insiders, min_total_value)
+            out.append({"issuer_cik": issuer_cik, "ticker": seen["ticker"].iloc[-1], "public_date": day.date(),
+                        "first_buy": seen["tx_date"].min().date(), "insiders": seen["insider_cik"].nunique(),
+                        "total_value": float(seen["value"].sum()),
+                        "score": float(scored["score"].iloc[0]) if not scored.empty else float("nan")})
+            last = day
+    return pd.DataFrame(out, columns=cols)
+
+
+def record_live_calls(engine=None) -> int:
+    """Record clusters found with the radar's default thresholds as live calls (fixed, so hindsight can't tune them)."""
+    from . import track
+    events = cluster_events(load_purchases(engine, lookback_days=180))
+    return sum(track.record("insider_cluster", e.ticker, 1, e.score, e.public_date, f"{e.issuer_cik}:{e.first_buy}",
+                            issuer_cik=e.issuer_cik, engine=engine) for e in events.itertuples())
 
 
 # ----------------------------------------------------------------- alerts

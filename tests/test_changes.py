@@ -102,3 +102,18 @@ def test_explain_drops_unknown_ids(monkeypatch):
     out = changes.explain("Acme Corp", "ACME", diffs)
     assert [c["id"] for c in out] == ["p2"] and out[0]["kind"] == "strengthened"
     assert sent["output_config"]["format"]["type"] == "json_schema" and "tool_choice" not in sent
+
+
+def test_score_company_records_live_call_once_cutoffs_exist(engine, monkeypatch):
+    from core import track
+    for i, strength in enumerate(range(0, 100, 10)):  # backtest distribution: cut-offs at 18 and 72
+        track.record("filing_change", f"T{i}", 0, strength, date(2024, 3, 1), f"bt-{i}", mode="backtest", engine=engine)
+    old = edgar.Filing("0000000042", "acc-old", "10-K", "2025-02-01", "2024-12-31", "doc.htm")
+    new = edgar.Filing("0000000042", "acc-new", "10-K", date.today().isoformat(), "2025-12-31", "doc.htm")
+    texts = {"acc-old": {"MD&A": MDNA}, "acc-new": {"MD&A": RISK}}
+    monkeypatch.setattr(edgar, "lookup", lambda t: {"cik": "0000000042", "name": "Acme Corp"})
+    monkeypatch.setattr(edgar, "recent_filings", lambda cik, forms, limit=50: [new, old])
+    monkeypatch.setattr(changes, "sections", lambda f: texts[f.accession])
+    (y,) = changes.score_company("acme", engine=engine)
+    live = track.load_calls(engine, mode="live")
+    assert y.combined >= 72 and live[["kind", "direction", "source_ref"]].values.tolist() == [["filing_change", -1, "acc-new"]]
