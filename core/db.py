@@ -80,6 +80,22 @@ prices = Table(
     UniqueConstraint("ticker", "date", name="uq_prices_day"),
 )
 
+# Every signal FinSight produces, graded later against SPY (core/track.py).
+calls = Table(
+    "calls", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("kind", String(20), nullable=False),         # debate | insider_cluster | filing_change
+    Column("ticker", String(20), nullable=False, index=True),
+    Column("issuer_cik", String(10)),
+    Column("direction", Integer, nullable=False),       # +1 bullish, -1 bearish, 0 neutral (not graded)
+    Column("strength", Float),
+    Column("public_date", Date, nullable=False),        # when the information became public
+    Column("recorded_at", DateTime, server_default=func.now()),
+    Column("source_ref", String(80), nullable=False),
+    Column("mode", String(10), nullable=False),         # live | backtest
+    UniqueConstraint("kind", "source_ref", "mode", name="uq_calls_source"),
+)
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),
