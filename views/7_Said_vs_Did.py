@@ -16,8 +16,9 @@ if not ticker:
 st.query_params["ticker"] = ticker
 market = markets.get(markets.of_ticker(ticker))
 if "filings" not in market.tools:
-    st.info(f"Said vs did reads annual reports, which aren't available for {market.name} yet. They come with the "
-            "India data feed (Phase 2). The Deals radar covers India today.")
+    st.info(f"Said vs did reads annual reports, which aren't available for {market.name} yet. "
+            + ("They come with the India data feed (Phase 2); the Deals radar covers India today." if market.code == "IN"
+               else "Japan's switch on once EDINET indexing is added to the app."))
     st.stop()
 
 ledger = promises.stored(ticker)
@@ -41,10 +42,12 @@ s = ledger["score"]
 with ui.panel("score"):
     cols = st.columns(6)
     cols[0].metric("Credibility", "Too few to judge" if s["too_few"] else f"{s['credibility']:.0%}",
-                   help=f"Kept plus half of partly kept, over resolved promises. Needs at least {promises.MIN_RESOLVED} resolved.")
+                   help=f"Kept plus half of partly kept, over promises judged kept, partly kept or missed. "
+                        f"Needs at least {promises.MIN_JUDGED}. Promises never mentioned again are shown but left out.")
     for col, key in zip(cols[1:], ("kept", "partly", "missed", "dropped", "open")):
         col.metric(LABELS[key][0], s[key])
-    st.caption("\"Not mentioned again\" means later reports never brought the promise up, not that it failed.")
+    st.caption("\"Not mentioned again\" means later reports never brought the promise up, not that it failed, so "
+               "it doesn't count against credibility. Each quote is the full sentence from the report.")
 
 for key in ("missed", "partly", "dropped", "kept", "unchecked", "open"):
     rows = [p for p in ledger["promises"] if p["verdict"] == key]

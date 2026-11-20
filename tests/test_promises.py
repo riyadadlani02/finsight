@@ -49,7 +49,7 @@ def test_score():
     rows = [{"verdict": v} for v in ["kept"] * 3 + ["partly"] * 2 + ["missed"] + ["dropped"] + ["open", "unchecked"]]
     s = promises.score(rows)
     assert (s["kept"], s["partly"], s["missed"], s["dropped"], s["open"], s["unchecked"]) == (3, 2, 1, 1, 1, 1)
-    assert s["resolved"] == 7 and abs(s["credibility"] - 4 / 7) < 1e-9 and not s["too_few"]
+    assert s["judged"] == 6 and abs(s["credibility"] - 4 / 6) < 1e-9 and not s["too_few"]
     assert promises.score([{"verdict": "kept"}] * 4)["too_few"]
 
 
@@ -58,9 +58,9 @@ def test_run_caches_per_latest_report(engine, monkeypatch):
                ("acc-26", "2026-02-01", {"MD&A": FY26})]
     monkeypatch.setattr(promises, "_reports", lambda ticker, years: ("Acme", "US", reports))
     calls = {"extract": 0, "check": 0}
-    monkeypatch.setattr(promises, "extract", lambda name, acc, filed, secs: calls.__setitem__("extract", calls["extract"] + 1) or (
+    monkeypatch.setattr(promises, "extract", lambda name, acc, filed, secs, language="en": calls.__setitem__("extract", calls["extract"] + 1) or (
         [{"quote": "q", "promise": "Net debt under $10B", "deadline": "FY2025", "made_in": acc, "made_filed": filed}] if acc == "acc-24" else []))
-    monkeypatch.setattr(promises, "check", lambda name, made, later: calls.__setitem__("check", calls["check"] + 1) or
+    monkeypatch.setattr(promises, "check", lambda name, made, later, language="en": calls.__setitem__("check", calls["check"] + 1) or
                         [{**p, "verdict": "missed", "evidence_quote": "", "evidence_filed": ""} for p in made])
     first = promises.run("ACME", engine=engine)
     again = promises.run("ACME", engine=engine)
@@ -78,3 +78,40 @@ def test_stored_reads_the_latest_ledger_without_claude(engine):
                                            {"ticker": "ACME", "latest": "acc-26", "pid": "p2", "promise": "y", "verdict": "open"}])
     s = promises.stored("ACME", engine=engine)
     assert s["latest"] == "acc-26" and [p["pid"] for p in s["promises"]] == ["p1", "p2"] and s["score"]["kept"] == 1
+
+
+def test_a_fragment_of_a_negated_sentence_is_not_a_promise(monkeypatch):
+    src = {"MD&A": "We do not expect to open 50 new stores by fiscal 2026 given current demand conditions."}
+    _fake_claude(monkeypatch, [{"promises": [
+        {"quote": "expect to open 50 new stores by fiscal 2026", "promise": "Open 50 stores", "deadline": "FY2026"},
+        {"quote": "MD&A", "promise": "header", "deadline": "none stated"}]}])
+    assert promises.extract("Acme", "acc", "2024-02-01", src) == []
+
+
+def test_extract_stores_the_whole_sentence(monkeypatch):
+    src = {"MD&A": "Revenue grew 8%. We plan to open 3 new factories in Asia by the end of fiscal 2026, subject to approvals."}
+    _fake_claude(monkeypatch, [{"promises": [{"quote": "open 3 new factories in Asia by the end of fiscal 2026",
+                                              "promise": "3 Asian factories", "deadline": "FY2026"}]}])
+    (p,) = promises.extract("Acme", "acc", "2024-02-01", src)
+    assert p["quote"] == "We plan to open 3 new factories in Asia by the end of fiscal 2026, subject to approvals."
+
+
+def test_japanese_quotes_match_across_line_breaks_and_widths(monkeypatch):
+    src = {"MD&A": "当社は２０２６年度までに売上高を\n１兆円に拡大することを目指します。"}
+    _fake_claude(monkeypatch, [{"promises": [{"quote": "当社は2026年度までに売上高を1兆円に拡大することを目指します。",
+                                              "promise": "Revenue of ¥1tn by FY2026", "deadline": "FY2026"}]}])
+    assert len(promises.extract("トヨタ", "doc", "2024-06-20", src, language="ja")) == 1
+
+
+def test_evidence_must_come_from_the_report_it_names(monkeypatch):
+    made = [{"id": "p1", "quote": "q", "promise": "x", "deadline": "FY2025", "made_in": "a", "made_filed": "2024-02-01"}]
+    later = [("acc-25", "2025-02-01", {"MD&A": "Net debt ended the year at $13.4 billion, above our target."}),
+             ("acc-26", "2026-02-01", {"MD&A": "Nothing about debt here at all this year."})]
+    _fake_claude(monkeypatch, [{"verdicts": [{"id": "p1", "verdict": "missed", "evidence_filed": "2026-02-01",
+                                              "evidence_quote": "Net debt ended the year at $13.4 billion, above our target."}]}])
+    assert promises.check("Acme", made, later)[0]["verdict"] == "unchecked"
+
+
+def test_credibility_leaves_unmentioned_promises_out():
+    s = promises.score([{"verdict": v} for v in ["kept"] * 4 + ["missed"] * 2 + ["dropped"] * 6])
+    assert abs(s["credibility"] - 4 / 6) < 1e-9 and s["dropped"] == 6 and s["judged"] == 6 and not s["too_few"]

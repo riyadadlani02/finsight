@@ -202,7 +202,7 @@ def test_card_data_fills_cards(engine, monkeypatch):
                                                  for a, f, s in (("x1", date(2025, 2, 1), 10), ("x2", date(2026, 2, 1), 30))])
     track.record("debate", "ACME", -1, 10, today, "1", engine=engine)
     cards = cockpit.card_data("ACME", engine=engine)["cards"]
-    assert (cards["said"]["resolved"], cards["said"]["kept"], cards["said"]["too_few"]) == (1, 1, True)
+    assert (cards["said"]["judged"], cards["said"]["kept"], cards["said"]["too_few"]) == (1, 1, True)
     assert (cards["insiders"]["insiders"], cards["insiders"]["total"]) == (2, 100_000.0)
     assert cards["filing"]["combined"] == 30 and cards["filing"]["history"] == [10, 30]
     assert cards["record"]["calls"] == 1
@@ -284,3 +284,8 @@ def test_card_data_for_an_indian_stock(engine, monkeypatch):
     assert (d["name"], d["market"], d["symbol"], d["last"]) == ("Reliance Industries Limited", "IN", "₹", 2600.0)
     assert "deals" in d["tools"] and "filings" not in d["tools"]
     assert d["cards"]["deals"]["net_crore"] == 104.0 and d["cards"]["deals"]["signals"] == 1
+
+
+def test_clean_ticker_allows_ampersand_symbols():
+    assert cockpit.clean_ticker("m&m.ns") == "M&M.NS" and cockpit.clean_ticker("J&KBANK.NS") == "J&KBANK.NS"
+    assert "input.maxLength = 20" in cockpit.JS

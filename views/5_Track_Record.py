@@ -6,8 +6,8 @@ import streamlit as st
 
 from core import prices, track, ui
 
-ui.header("Track record", "Every debate verdict, insider cluster and filing change becomes a dated call, graded "
-          "against the S&P 500 once its horizon has passed. Past results don't promise future ones.")
+ui.header("Track record", "Every signal becomes a dated call, graded against its own market (S&P 500, Nifty 50, "
+          "TOPIX) once its horizon has passed. Past results don't promise future ones.")
 
 LABELS = {("debate", 1): "Bull wins a debate", ("debate", -1): "Bear wins a debate",
           ("insider_cluster", 1): "Insider cluster buy",
@@ -46,11 +46,18 @@ left, right = st.columns([1, 1])
 mode = (left.segmented_control("Calls", ["Backtest", "Live"], default="Backtest") or "Backtest").lower()
 horizon = right.segmented_control("Horizon", [30, 90, 180], default=90, format_func=lambda h: f"{h} days") or 90
 
-with st.spinner("Grading calls against S&P 500 prices (first run downloads prices)..."):
+with st.spinner("Grading calls against each market's prices (first run downloads prices)..."):
     graded = graded_calls(mode, date.today())
+if not graded.empty:
+    from core import markets
+    present = sorted({track._market(r) for r in graded.to_dict("records")})
+    pick = st.segmented_control("Market", present, default=present[0] if len(present) == 1 else None,
+                                format_func=lambda m: markets.get(m).name, selection_mode="single")
+    if pick:
+        graded = graded[[track._market(r) == pick for r in graded.to_dict("records")]]
 
 if graded.empty:
-    st.info("No live calls yet. They're recorded when you run a debate, scan the insider radar, or score a 10-K."
+    st.info("No live calls yet. They're recorded when you fetch Indian deals, scan the insider radar, or score a 10-K."
             if mode == "live" else "No backtest yet. Run one below to grade the signals on history.")
 else:
     if mode == "backtest" and (graded["kind"] == "filing_change").any():
@@ -70,7 +77,7 @@ else:
                            "biased upward, and this gap between the two groups is the fairer number.")
 
     board = track.scoreboard(graded, horizon)
-    rows = [{"Signal": LABELS.get((r.kind, r.direction), f"{r.kind} {r.direction:+d}"), "Calls": r.n, "Months": r.months,
+    rows = [{"Market": r.market, "Signal": LABELS.get((r.kind, r.direction), f"{r.kind} {r.direction:+d}"), "Calls": r.n, "Months": r.months,
              "Hit rate": "n/a" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}",
              "Hit rate 95%": "needs 2+ months" if pd.isna(r.hit_lo) else f"{r.hit_lo:.0%} to {r.hit_hi:.0%}",
              "Mean vs market": pct(r.mean), "Mean 95%": interval(r.mean_lo, r.mean_hi), "Median": pct(r.median),

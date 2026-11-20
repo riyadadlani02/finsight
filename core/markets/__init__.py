@@ -53,7 +53,8 @@ def _jp(text: str) -> Company | None:
 MARKETS = {
     "US": Market("US", "United States", "USD", "$", "SPY", "S&P 500", frozenset({"filings", "debate", "insider"}), _us),
     "IN": Market("IN", "India", "INR", "₹", "NIFTYBEES.NS", "Nifty 50", frozenset({"deals"}), _in),
-    "JP": Market("JP", "Japan", "JPY", "¥", "1306.T", "TOPIX", frozenset({"filings", "debate"}), _jp),
+    # Japan's filing tools switch on once EDINET reports can be indexed from the app (design doc, Phase 1 remainder).
+    "JP": Market("JP", "Japan", "JPY", "¥", "1306.T", "TOPIX", frozenset(), _jp),
 }
 
 

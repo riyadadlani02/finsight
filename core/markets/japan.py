@@ -40,6 +40,10 @@ class JapanError(RuntimeError):
     pass
 
 
+NEEDS_KEY = ("Japan needs a free EDINET API key: register on EDINET (https://api.edinet-fsa.go.jp) "
+             "and set EDINET_API_KEY in .env or the app's secrets.")
+
+
 def _code_csv() -> str:
     """EDINET's code list (EDINET code, securities code, names), cached for a month."""
     path = DATA / "edinet_codes.csv"
@@ -79,8 +83,7 @@ def _api(path: str, params: dict, raw: bool = False):
     global _last
     key = config.get("EDINET_API_KEY")
     if not key:
-        raise JapanError("Japan needs a free EDINET API key: register on EDINET (https://api.edinet-fsa.go.jp) "
-                         "and set EDINET_API_KEY in .env or the app's secrets.")
+        raise JapanError(NEEDS_KEY)
     wait = 0.5 - (time.monotonic() - _last)   # polite pacing
     if wait > 0:
         time.sleep(wait)
@@ -103,7 +106,10 @@ def scan(days: int, engine=None, today: date | None = None, progress=None) -> in
     todo = [today - timedelta(days=n) for n in range(days) if today - timedelta(days=n) not in done]
     added = 0
     for i, day in enumerate(todo, 1):
-        results = _api("documents.json", {"date": day.isoformat(), "type": 2}).get("results") or []
+        body = _api("documents.json", {"date": day.isoformat(), "type": 2})
+        if str((body.get("metadata") or {}).get("status", "200")) != "200":
+            continue  # EDINET answered with an error: try this day again next scan
+        results = body.get("results") or []
         rows = [{"doc_id": r["docID"], "edinet_code": r["edinetCode"], "sec_code": r.get("secCode"), "filer": r.get("filerName"),
                  "filed": date.fromisoformat(r["submitDateTime"][:10]), "period_end": r.get("periodEnd")}
                 for r in results if r.get("docTypeCode") == ANNUAL and r.get("edinetCode")]
@@ -115,7 +121,8 @@ def scan(days: int, engine=None, today: date | None = None, progress=None) -> in
                 if new:
                     conn.execute(insert(db.jp_reports), new)
                 added += len(new)
-            conn.execute(insert(db.jp_scanned).values(day=day))
+            if day <= today - timedelta(days=2):  # filings for the last two days can still arrive
+                conn.execute(insert(db.jp_scanned).values(day=day))
         if progress:
             progress(i, len(todo))
     return added
@@ -132,7 +139,11 @@ def annual_reports(edinet_code: str, limit: int = 6, engine=None) -> list[dict]:
 def parse_sections(zip_bytes: bytes) -> dict[str, str]:
     """Risk and MD&A text from EDINET's CSV rendition (a zip of UTF-16 tab-separated files)."""
     found: dict[str, str] = {}
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+    try:
+        z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile:
+        raise JapanError("EDINET didn't return a CSV rendition for this report.") from None
+    with z:
         for name in z.namelist():
             if not name.endswith(".csv"):
                 continue
@@ -147,12 +158,17 @@ def parse_sections(zip_bytes: bytes) -> dict[str, str]:
 def sections(doc_id: str) -> dict[str, str]:
     path = DATA / "edinet" / f"{doc_id}.json"
     if not path.exists():
+        found = parse_sections(_api(f"documents/{doc_id}", {"type": 5}, raw=True))
+        if not found:  # never cache a miss: the element ids may be fixed later
+            raise JapanError(f"No business-risk or MD&A text found in EDINET report {doc_id}.")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(parse_sections(_api(f"documents/{doc_id}", {"type": 5}, raw=True)), ensure_ascii=False))
+        path.write_text(json.dumps(found, ensure_ascii=False))
     return json.loads(path.read_text())
 
 
 def reports_with_sections(ticker: str, years: int) -> tuple[str, str, list[tuple[str, str, dict]]]:
+    if not config.get("EDINET_API_KEY"):
+        raise JapanError(NEEDS_KEY)
     company = resolve(ticker)
     if company is None:
         raise ValueError(f"{ticker} isn't a listed Japanese securities code.")

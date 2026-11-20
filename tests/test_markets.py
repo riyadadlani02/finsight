@@ -157,8 +157,9 @@ def test_scan_indexes_annual_reports_once_per_day(engine, monkeypatch):
             {"docID": "S100BBBB", "edinetCode": "E02144", "secCode": "72030", "filerName": "トヨタ自動車株式会社",
              "docTypeCode": "140", "submitDateTime": "2026-06-20 15:00", "periodEnd": "2026-06-30", "csvFlag": "1"}]}
     monkeypatch.setattr(japan, "_api", api)
-    assert japan.scan(1, engine=engine, today=date(2026, 6, 20)) == 1
-    assert japan.scan(1, engine=engine, today=date(2026, 6, 20)) == 0 and calls == ["2026-06-20"]
+    assert japan.scan(3, engine=engine, today=date(2026, 6, 22)) == 1
+    assert japan.scan(3, engine=engine, today=date(2026, 6, 22)) == 0  # the last two days are rescanned; older ones aren't
+    assert calls == ["2026-06-22", "2026-06-21", "2026-06-20", "2026-06-22", "2026-06-21"]
     (r,) = japan.annual_reports("E02144", engine=engine)
     assert (r["doc_id"], r["filed"], r["period_end"]) == ("S100AAAA", date(2026, 6, 20), "2026-03-31")
 
@@ -183,3 +184,55 @@ def test_edinet_errors_never_carry_the_key(monkeypatch):
     with pytest.raises(japan.JapanError) as err:
         japan._api("documents.json", {"date": "2026-06-20", "type": 2})
     assert "SECRET-KEY-123" not in str(err.value) and err.value.__cause__ is None and err.value.__suppress_context__
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_grade_skips_days_the_stocks_exchange_was_shut():
+    days = pd.bdate_range("2025-11-20", "2026-03-31")
+    closes = pd.DataFrame({"AAPL": 100.0, "SPY": 100.0, "RELIANCE.NS": 100.0, "NIFTYBEES.NS": 100.0}, index=days)
+    closes.loc["2025-11-27", ["AAPL", "SPY"]] = np.nan  # Thanksgiving: NYSE shut, NSE open
+    calls = pd.DataFrame([{"kind": "debate", "ticker": "AAPL", "market": "US", "direction": 1, "strength": 1.0,
+                           "public_date": date(2025, 11, 26), "source_ref": "a", "mode": "live"}])
+    g = track.grade(calls, closes, today=date(2026, 6, 30))
+    assert g.loc[0, "entry"] == pd.Timestamp("2025-11-28") and g.loc[0, "status_30"] == "graded"
+
+
+def test_scoreboard_never_mixes_markets():
+    rows = [{"kind": "filing_change", "direction": 1, "mode": "backtest", "market": m, "status_30": "graded",
+             "public_date": date(2025, 1 + i % 12, 5), "excess_30": 0.01, "hit_30": True} for m in ("US", "JP") for i in range(3)]
+    board = track.scoreboard(pd.DataFrame(rows), 30)
+    assert sorted(board["market"]) == ["JP", "US"] and (board["n"] == 3).all()
+
+
+def test_japan_filings_hidden_until_reports_can_be_indexed(monkeypatch):
+    assert "filings" not in markets.get("JP").tools  # no scan UI yet: say "not available", don't fail later
+    monkeypatch.delenv("EDINET_API_KEY", raising=False)
+    monkeypatch.setattr(japan, "resolve", lambda t: markets.Company("7203.T", "Toyota", "E02144", "JP"))
+    with pytest.raises(japan.JapanError, match="EDINET API key"):
+        japan.reports_with_sections("7203.T", 4)
+
+
+def test_scan_leaves_recent_and_failed_days_for_later(engine, monkeypatch):
+    def api(path, params):
+        return {"metadata": {"status": "500"}, "results": []} if params["date"] == "2026-06-10" else {"metadata": {"status": "200"}, "results": []}
+    monkeypatch.setattr(japan, "_api", api)
+    japan.scan(15, engine=engine, today=date(2026, 6, 20))
+    with engine.connect() as conn:
+        done = {r[0] for r in conn.execute(db.jp_scanned.select())}
+    assert date(2026, 6, 20) not in done and date(2026, 6, 19) not in done  # filings can still arrive
+    assert date(2026, 6, 10) not in done and date(2026, 6, 15) in done
+
+
+def test_sections_never_cache_an_empty_or_broken_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(japan, "DATA", tmp_path)
+    monkeypatch.setattr(japan, "_api", lambda path, params, raw=False: b"not a zip")
+    with pytest.raises(japan.JapanError):
+        japan.sections("S100XXXX")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("x.csv", "要素ID\t値\njpcrp_cor:Other\tfoo".encode("utf-16"))
+    monkeypatch.setattr(japan, "_api", lambda path, params, raw=False: buf.getvalue())
+    with pytest.raises(japan.JapanError):
+        japan.sections("S100YYYY")
+    assert not list(tmp_path.rglob("*.json"))

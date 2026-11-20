@@ -52,7 +52,9 @@ def load_calls(engine=None, mode: str | None = None) -> pd.DataFrame:
 
 def _market(row) -> str:
     m = row.get("market") if hasattr(row, "get") else None
-    return m if isinstance(m, str) and m in markets.MARKETS else markets.of_ticker(row["ticker"])
+    if isinstance(m, str) and m in markets.MARKETS:
+        return m
+    return markets.of_ticker(row["ticker"]) if row.get("ticker") else "US"
 
 
 def benchmark_of(row) -> str:
@@ -65,13 +67,23 @@ def benchmarks_for(calls: pd.DataFrame) -> list[str]:
 
 
 def grade(calls: pd.DataFrame, closes: pd.DataFrame, today: date, horizons=HORIZONS) -> pd.DataFrame:
-    """Excess return over the call's market benchmark, from the first close after public_date to h days later."""
+    """Excess return over the call's market benchmark, from the first close after public_date to h days later.
+
+    Each call uses only the days both its stock and its benchmark traded, so a holiday on one exchange
+    (Thanksgiving, Diwali) never lands a US or Indian call on a missing price.
+    """
     out = calls.copy()
-    idx = closes.index
     out["entry"] = pd.NaT
     for h in horizons:
         out[f"excess_{h}"], out[f"hit_{h}"], out[f"status_{h}"] = np.nan, pd.NA, "no_price"
     for i, row in calls.iterrows():
+        b_sym = benchmark_of(row)
+        if row["ticker"] not in closes or b_sym not in closes:
+            continue  # stays no_price
+        pair = closes[[row["ticker"], b_sym]].dropna()
+        if pair.empty:
+            continue
+        idx = pair.index
         pos = idx.searchsorted(pd.Timestamp(row["public_date"]), side="right")
         if pos >= len(idx):
             for h in horizons:
@@ -79,27 +91,19 @@ def grade(calls: pd.DataFrame, closes: pd.DataFrame, today: date, horizons=HORIZ
             continue
         entry = idx[pos]
         out.at[i, "entry"] = entry
-        series = closes[row["ticker"]] if row["ticker"] in closes else pd.Series(np.nan, index=idx)
-        b_sym = benchmark_of(row)
-        bench = closes[b_sym] if b_sym in closes else pd.Series(np.nan, index=idx)
         for h in horizons:
             target = entry + pd.Timedelta(days=h)
-            if target.date() > today:
-                out.at[i, f"status_{h}"] = "pending"
-                continue
             end = idx.searchsorted(target, side="left")
-            if end >= len(idx):
+            if target.date() > today or end >= len(idx):
                 out.at[i, f"status_{h}"] = "pending"
                 continue
-            p0, p1, b0, b1 = series.iloc[pos], series.iloc[end], bench.iloc[pos], bench.iloc[end]
-            if pd.isna(p0) or pd.isna(p1) or pd.isna(b0) or pd.isna(b1):
-                continue  # stays no_price: delisted, or never listed on Yahoo
+            p0, b0 = pair.iloc[pos]
+            p1, b1 = pair.iloc[end]
             excess = (p1 / p0 - 1) - (b1 / b0 - 1)
             out.at[i, f"excess_{h}"] = excess
             out.at[i, f"hit_{h}"] = bool(np.sign(excess) == np.sign(row["direction"]))
             out.at[i, f"status_{h}"] = "graded"
     return out
-
 
 def block_ci(values: pd.Series, months: pd.Series, stat: Callable = np.mean, n: int = 2000,
              seed: int = 0) -> tuple[float, float]:
@@ -119,15 +123,17 @@ def _month(d) -> str:
 
 def scoreboard(graded: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """One row per (kind, direction, mode). Neutral calls (direction 0) aren't graded."""
-    cols = ["kind", "direction", "mode", "n", "months", "hit_rate", "hit_lo", "hit_hi", "mean", "mean_lo", "mean_hi",
+    cols = ["market", "kind", "direction", "mode", "n", "months", "hit_rate", "hit_lo", "hit_hi", "mean", "mean_lo", "mean_hi",
             "median", "median_lo", "median_hi", "too_few", "dropped"]
     rows = []
     status, excess, hit = f"status_{horizon}", f"excess_{horizon}", f"hit_{horizon}"
-    for (kind, direction, mode), g in graded[graded["direction"] != 0].groupby(["kind", "direction", "mode"]):
+    graded = graded.assign(market=[_market(r) for r in graded.to_dict("records")] if "ticker" in graded or "market" in graded
+                           else "US")
+    for (market, kind, direction, mode), g in graded[graded["direction"] != 0].groupby(["market", "kind", "direction", "mode"]):
         ok = g[g[status] == "graded"]
         months = ok["public_date"].map(_month)
         hits = ok[hit].astype(float)
-        row = {"kind": kind, "direction": int(direction), "mode": mode, "n": len(ok), "months": months.nunique(),
+        row = {"market": market, "kind": kind, "direction": int(direction), "mode": mode, "n": len(ok), "months": months.nunique(),
                "dropped": int((g[status] == "no_price").sum())}
         if len(ok):
             row.update(hit_rate=hits.mean(), mean=ok[excess].mean(), median=ok[excess].median())
@@ -171,10 +177,14 @@ def event_curve(calls: pd.DataFrame, closes: pd.DataFrame, days: int = 180) -> p
     for _, row in calls[calls["direction"] != 0].iterrows():
         pos = idx.searchsorted(pd.Timestamp(row["public_date"]), side="right")
         b_sym = benchmark_of(row)
-        if pos >= len(idx) or row["ticker"] not in closes or b_sym not in closes:
+        if row["ticker"] not in closes or b_sym not in closes:
             continue
-        p = closes[row["ticker"]].iloc[pos:pos + days + 1].to_numpy()
-        b = closes[b_sym].iloc[pos:pos + days + 1].to_numpy()
+        pair = closes[[row["ticker"], b_sym]].dropna()
+        pos = pair.index.searchsorted(pd.Timestamp(row["public_date"]), side="right")
+        if pos >= len(pair):
+            continue
+        p = pair.iloc[pos:pos + days + 1, 0].to_numpy()
+        b = pair.iloc[pos:pos + days + 1, 1].to_numpy()
         if not len(p) or np.isnan(p[0]) or np.isnan(b[0]):
             continue
         path = np.full(days + 1, np.nan)

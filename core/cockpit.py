@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from . import db, markets, prices
 
-_TICKER = re.compile(r"^[A-Z0-9.\-]{1,20}$")  # NSE symbols plus .NS run past 10
+_TICKER = re.compile(r"^[A-Z0-9.&\-]{1,20}$")  # NSE symbols plus .NS run past 10
 
 
 def clean_ticker(s: str | None) -> str | None:
@@ -71,7 +71,7 @@ def card_data(ticker: str, engine=None) -> dict:
     if ledger:
         from . import promises
         s = promises.score(ledger)
-        cards["said"] = {k: s[k] for k in ("kept", "partly", "missed", "dropped", "open", "resolved", "too_few")}
+        cards["said"] = {k: s[k] for k in ("kept", "partly", "missed", "dropped", "open", "judged", "too_few")}
         cards["said"]["credibility"] = None if s["too_few"] else round(s["credibility"] * 100)
     if not buys.empty:
         cards["insiders"] = {"insiders": int(buys["insider_cik"].nunique()), "total": float(buys["value"].sum()),
@@ -200,7 +200,8 @@ export default function (component) {
   label(sw, "Switch company");
   title.append(h("span", "nm", d.name), h("span", "tk", " " + d.ticker), sw);
   const form = h("form"), input = h("input");
-  input.placeholder = "Ticker, e.g. MSFT"; input.maxLength = 10; label(input, "Ticker");
+  input.placeholder = {"IN": "NSE symbol, e.g. TCS", "JP": "Code, e.g. 6758"}[d.market] || "Ticker, e.g. MSFT";
+  input.maxLength = 20; label(input, "Ticker");
   form.hidden = true; form.append(input);
   sw.onclick = () => { form.hidden = !form.hidden; if (!form.hidden) input.focus(); };
   form.onsubmit = e => { e.preventDefault(); const v = input.value.trim().toUpperCase(); if (v) setTriggerValue("ticker", v); };
@@ -250,7 +251,9 @@ export default function (component) {
     t.append(h("b", null, name), h("span", null, "Not available in this market yet"));
     head.append(h("i", null, icon), t, h("span")); a.append(head, h("div", "empty", text)); cards.append(a);
   };
-  if (!tools.includes("filings")) unavailable("⚖", "Said vs did", "Needs annual reports, which come with the India data feed (Phase 2).");
+  const noReports = d.market === "JP" ? "Japan's annual reports switch on once EDINET indexing is added to the app."
+                                       : "Needs annual reports, which come with the India data feed (Phase 2).";
+  if (!tools.includes("filings")) unavailable("⚖", "Said vs did", noReports);
   else card("⚖", "Said vs did", "Management's promises, checked against later reports", "said", body => {
     if (!c.said) return empty(body, "Promises not checked yet.", "Check promises", "said");
     const big = h("div", "big", c.said.credibility == null ? "—" : c.said.credibility + "%");
@@ -279,7 +282,7 @@ export default function (component) {
     txt.append(big, h("div", "sub", `${money(c.insiders.total)} bought, last on ${c.insiders.last}`));
     row.append(ring, txt); body.append(row);
   });
-  if (!tools.includes("filings")) unavailable("▤", "Filing changes", "Needs annual reports, which come with the India data feed (Phase 2).");
+  if (!tools.includes("filings")) unavailable("▤", "Filing changes", noReports);
   else card("▤", d.market === "JP" ? "Annual report change" : "10-K change", c.filing ? "10-K filed " + c.filing.filed + " vs the year before" : "Risk Factors and MD&A vs last year", "filings", body => {
     if (!c.filing) return empty(body, "Not scored yet.", "Score it", "filings");
     const big = h("div", "big", c.filing.combined); big.append(h("small", null, "/ 100"));
