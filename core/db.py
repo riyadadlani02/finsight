@@ -142,6 +142,18 @@ promises = Table(
     UniqueConstraint("ticker", "latest", "pid", name="uq_promises_ledger"),
 )
 
+# Japan: annual securities reports found on EDINET, and the days already scanned (core/markets/japan.py).
+jp_reports = Table(
+    "jp_reports", metadata,
+    Column("doc_id", String(20), primary_key=True),
+    Column("edinet_code", String(10), nullable=False, index=True),
+    Column("sec_code", String(5)),
+    Column("filer", String(200)),
+    Column("filed", Date, nullable=False),
+    Column("period_end", String(10)),
+)
+jp_scanned = Table("jp_scanned", metadata, Column("day", Date, primary_key=True))
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),

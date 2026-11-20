@@ -115,3 +115,60 @@ def test_day_summary_shows_every_stock_and_why():
     assert (s.loc["ACME", "buyers"], s.loc["ACME", "churners"], s.loc["ACME", "signal"]) == (2, 1, 1)
     assert (s.loc["SOLO", "net_value"], s.loc["SOLO", "buyers"], s.loc["SOLO", "signal"]) == (100_000_000.0, 1, 0)
     assert s.loc["DUMP", "signal"] == -1
+
+
+# ---------------------------------------------------------------- Japan (EDINET)
+
+import io
+import zipfile
+
+import pytest
+
+from core.markets import japan
+
+CODES = ("ダウンロード実行日,2026年11月20日現在,件数,2件\n"
+         "ＥＤＩＮＥＴコード,提出者種別,上場区分,連結の有無,資本金,決算日,提出者名,提出者名（英字）,提出者名（ヨミ）,所在地,提出者業種,証券コード,提出者法人番号\n"
+         '"E02144","内国法人・組合","上場","有","635401","3月31日","トヨタ自動車株式会社","TOYOTA MOTOR CORPORATION","","","輸送用機器","72030",\n'
+         '"E99999","内国法人・組合","非上場","無","1","3月31日","非上場株式会社","","","","サービス業","",\n')
+
+
+def test_japan_resolve(monkeypatch):
+    monkeypatch.setattr(japan, "_code_csv", lambda: CODES)
+    japan._codes.cache_clear()
+    c = markets.get("JP").resolve("7203.t")
+    assert (c.ticker, c.name, c.issuer_id, c.market) == ("7203.T", "TOYOTA MOTOR CORPORATION", "E02144", "JP")
+    assert markets.get("JP").resolve("9999") is None and markets.get("JP").resolve("TOYOTA") is None
+    japan._codes.cache_clear()
+
+
+def test_japan_needs_a_key(monkeypatch):
+    monkeypatch.delenv("EDINET_API_KEY", raising=False)
+    with pytest.raises(japan.JapanError, match="EDINET API key"):
+        japan._api("documents.json", {"date": "2026-06-20", "type": 2})
+
+
+def test_scan_indexes_annual_reports_once_per_day(engine, monkeypatch):
+    calls = []
+    def api(path, params):
+        calls.append(params["date"])
+        return {"results": [
+            {"docID": "S100AAAA", "edinetCode": "E02144", "secCode": "72030", "filerName": "トヨタ自動車株式会社",
+             "docTypeCode": "120", "submitDateTime": "2026-06-20 15:00", "periodEnd": "2026-03-31", "csvFlag": "1"},
+            {"docID": "S100BBBB", "edinetCode": "E02144", "secCode": "72030", "filerName": "トヨタ自動車株式会社",
+             "docTypeCode": "140", "submitDateTime": "2026-06-20 15:00", "periodEnd": "2026-06-30", "csvFlag": "1"}]}
+    monkeypatch.setattr(japan, "_api", api)
+    assert japan.scan(1, engine=engine, today=date(2026, 6, 20)) == 1
+    assert japan.scan(1, engine=engine, today=date(2026, 6, 20)) == 0 and calls == ["2026-06-20"]
+    (r,) = japan.annual_reports("E02144", engine=engine)
+    assert (r["doc_id"], r["filed"], r["period_end"]) == ("S100AAAA", date(2026, 6, 20), "2026-03-31")
+
+
+def test_sections_from_edinet_csv():
+    rows = ["要素ID\t項目名\tコンテキストID\t相対年度\t連結・個別\t期間・時点\tユニットID\t単位\t値",
+            "jpcrp_cor:BusinessRisksTextBlock\t事業等のリスク\tFilingDateInstant\t提出日時点\tその他\t時点\t－\t－\t<p>為替の変動は業績に影響します。</p>",
+            "jpcrp_cor:ManagementAnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock\t経営者による分析\tFilingDateInstant\t提出日時点\tその他\t時点\t－\t－\t<p>売上高は増加しました。</p>"]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("XBRL_TO_CSV/jpcrp030000-asr-001.csv", ("\n".join(rows)).encode("utf-16"))
+    s = japan.parse_sections(buf.getvalue())
+    assert s == {"Risk Factors": "為替の変動は業績に影響します。", "MD&A": "売上高は増加しました。"}
