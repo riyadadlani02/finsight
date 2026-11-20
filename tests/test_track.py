@@ -176,12 +176,14 @@ def _fake_prices(monkeypatch):
 def test_clean_ticker():
     assert cockpit.clean_ticker(" aapl ") == "AAPL" and cockpit.clean_ticker("BRK.B") == "BRK.B"
     assert cockpit.clean_ticker("<script>") is None and cockpit.clean_ticker("") is None
+    assert cockpit.clean_ticker("relianceind.ns") == "RELIANCEIND.NS" and cockpit.clean_ticker("130A.T") == "130A.T"
 
 
 def test_card_data_empty_states(engine, monkeypatch):
     _fake_prices(monkeypatch)
     d = cockpit.card_data("ACME", engine=engine)
-    assert d["cards"] == {"said": None, "insiders": None, "filing": None, "record": None}
+    assert d["cards"] == {"said": None, "insiders": None, "deals": None, "filing": None, "record": None}
+    assert (d["market"], d["symbol"]) == ("US", "$") and "insider" in d["tools"]
     assert d["name"] == "Acme <b>Corp</b>"  # raw: the component sets it as text, never as HTML
     assert d["last"] == 130.0 and len(d["daily_1y"]) == 252 and d["chg_1y"] > 0
 
@@ -264,3 +266,21 @@ def test_source_url_without_cik_from_a_dataframe_row():
     row = {"kind": "filing_change", "ticker": "ACME", "issuer_cik": np.nan, "source_ref": "0001-26-000002",
            "public_date": date(2026, 2, 1)}  # a missing CIK arrives as NaN from the calls table
     assert track.source_url(row) == "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=ACME&type=10-K"
+
+
+
+def test_card_data_for_an_indian_stock(engine, monkeypatch):
+    from core.markets import india
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=300)
+    monkeypatch.setattr(prices, "closes", lambda tickers, start, engine=None, fetch=None:
+                        pd.DataFrame({tickers[0]: np.linspace(2000, 2600, 300)}, index=idx))
+    monkeypatch.setattr(india, "_equity_csv", lambda: "SYMBOL,NAME OF COMPANY\nRELIANCE,Reliance Industries Limited\n")
+    india._equity_list.cache_clear()
+    with engine.begin() as conn:
+        conn.execute(insert(db.in_deals), [dict(date=date.today(), symbol="RELIANCE", name="Reliance", client=c, side="BUY",
+                                                quantity=200_000, price=2600.0, kind="bulk") for c in ("FUND A", "FUND B")])
+    d = cockpit.card_data("RELIANCE.NS", engine=engine)
+    india._equity_list.cache_clear()
+    assert (d["name"], d["market"], d["symbol"], d["last"]) == ("Reliance Industries Limited", "IN", "₹", 2600.0)
+    assert "deals" in d["tools"] and "filings" not in d["tools"]
+    assert d["cards"]["deals"]["net_crore"] == 104.0 and d["cards"]["deals"]["signals"] == 1

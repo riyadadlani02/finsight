@@ -12,9 +12,9 @@ import pandas as pd
 import requests
 from sqlalchemy import select
 
-from . import db, edgar, prices
+from . import db, markets, prices
 
-_TICKER = re.compile(r"^[A-Z0-9.\-]{1,10}$")
+_TICKER = re.compile(r"^[A-Z0-9.\-]{1,20}$")  # NSE symbols plus .NS run past 10
 
 
 def clean_ticker(s: str | None) -> str | None:
@@ -29,14 +29,17 @@ def _num(x) -> float | None:
 def card_data(ticker: str, engine=None) -> dict:
     """Everything the cockpit shows for one ticker. A card is None when there's no data for it yet."""
     engine = engine or db.engine()
+    market = markets.get(markets.of_ticker(ticker))
     try:
-        name = edgar.lookup(ticker)["name"]
-    except (edgar.EdgarError, requests.RequestException):
-        name = ticker
+        company = market.resolve(ticker)
+    except requests.RequestException:
+        company = None
+    name = company.name if company else ticker
     closes = prices.closes([ticker], date.today() - timedelta(days=5 * 365 + 10), engine=engine)
     s = closes[ticker].dropna() if ticker in closes else pd.Series(dtype=float)
     data = {"name": name, "ticker": ticker, "meta": "", "last": None, "chg_1d": None, "chg_1y": None,
-            "daily_1y": [], "weekly_5y": []}
+            "daily_1y": [], "weekly_5y": [], "market": market.code, "symbol": market.symbol,
+            "tools": sorted(market.tools), "benchmark_name": market.benchmark_name}
     if len(s) >= 2:
         data.update(last=_num(s.iloc[-1]), chg_1d=_num((s.iloc[-1] / s.iloc[-2] - 1) * 100),
                     chg_1y=_num((s.iloc[-1] / s.iloc[-min(len(s), 252)] - 1) * 100),
@@ -56,7 +59,15 @@ def card_data(ticker: str, engine=None) -> dict:
         t = db.calls
         calls = pd.read_sql(select(t.c.kind, t.c.direction, t.c.public_date, t.c.mode).where(t.c.ticker == ticker), conn)
 
-    cards: dict = {"said": None, "insiders": None, "filing": None, "record": None}
+    cards: dict = {"said": None, "insiders": None, "deals": None, "filing": None, "record": None}
+    if "deals" in market.tools:
+        from .markets import india
+        recent = india.load_deals(engine, since=date.today() - timedelta(days=90))
+        recent = recent[recent["symbol"] == ticker.removesuffix(".NS").removesuffix(".BO")]
+        if not recent.empty:
+            days = india.day_summary(recent)
+            cards["deals"] = {"net_crore": round(float(days["net_value"].sum()) / 1e7, 1), "days": len(days),
+                              "signals": int((days["signal"] != 0).sum()), "last": str(max(days["date"]))}
     if ledger:
         from . import promises
         s = promises.score(ledger)
@@ -79,14 +90,15 @@ def card_data(ticker: str, engine=None) -> dict:
     return data
 
 
-def render(data: dict, key: str = "cockpit") -> tuple[str | None, str | None]:
-    """Mount the cockpit. Returns (ticker the user switched to, page a card asked to open); each is one-shot."""
+def render(data: dict, key: str = "cockpit") -> tuple[str | None, str | None, str | None]:
+    """Mount the cockpit. Returns (ticker switched to, page a card asked to open, market switched to); one-shot."""
     import streamlit as st
     global _mount
     if _mount is None:
         _mount = st.components.v2.component("finsight_cockpit", html="<div class='cockpit'></div>", css=CSS, js=JS)
-    result = _mount(data=data, key=key, on_ticker_change=lambda: None, on_open_change=lambda: None)
-    return getattr(result, "ticker", None), getattr(result, "open", None)
+    result = _mount(data=data, key=key, on_ticker_change=lambda: None, on_open_change=lambda: None,
+                    on_market_change=lambda: None)
+    return getattr(result, "ticker", None), getattr(result, "open", None), getattr(result, "market", None)
 
 
 _mount = None
@@ -99,6 +111,10 @@ CSS = """
 .cockpit button:focus-visible, .cockpit input:focus-visible { outline: 2px solid var(--line); outline-offset: 2px; }
 .cockpit .glass { background: var(--glass); border: 1px solid var(--edge); backdrop-filter: blur(18px) saturate(120%);
   -webkit-backdrop-filter: blur(18px) saturate(120%); }
+.markets { display: flex; gap: 4px; justify-content: center; margin: 0 auto 8px; padding: 4px; width: max-content;
+  border-radius: 999px; background: var(--glass); border: 1px solid var(--edge); }
+.markets button { padding: 5px 14px; border-radius: 999px; color: var(--muted); font-size: .82rem; }
+.markets button.on { background: rgba(255,255,255,.14); color: var(--ink); cursor: default; }
 .hero { text-align: center; }
 .hero .meta { color: var(--muted); font-size: .8rem; min-height: 1em; }
 .hero h1 { margin: 6px 0 4px; font-weight: 300; font-size: clamp(2.2rem, 5vw, 3.6rem); letter-spacing: -.035em; line-height: 1.05; }
@@ -170,7 +186,14 @@ export default function (component) {
   if (root._observer) root._observer.disconnect();
   root.replaceChildren();
 
-  // Hero: name, ticker switcher, price.
+  // Market switcher, then the hero: name, ticker switcher, price.
+  const marketsRow = h("nav", "markets");
+  label(marketsRow, "Market");
+  [["US", "US"], ["IN", "India"], ["JP", "Japan"]].forEach(([code, text]) => {
+    const b = h("button", code === d.market ? "on" : "", text);
+    if (code !== d.market) b.onclick = () => setTriggerValue("market", code); else b.setAttribute("aria-current", "true");
+    marketsRow.append(b);
+  });
   const hero = h("section", "hero");
   hero.append(h("div", "meta", d.meta || " "));
   const title = h("h1"), sw = h("button", "chev", "⌄");
@@ -183,7 +206,7 @@ export default function (component) {
   form.onsubmit = e => { e.preventDefault(); const v = input.value.trim().toUpperCase(); if (v) setTriggerValue("ticker", v); };
   const price = h("div", "price");
   if (d.last != null) {
-    price.append(h("span", "now", "$" + d.last.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })));
+    price.append(h("span", "now", (d.symbol || "$") + d.last.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })));
     if (d.chg_1d != null) price.append(h("span", "chip " + (d.chg_1d < 0 ? "down" : "up"), sign(d.chg_1d) + " today"));
     if (d.chg_1y != null) price.append(h("span", "chip " + (d.chg_1y < 0 ? "down" : "up"), sign(d.chg_1y) + " this year"));
   } else price.append(h("span", "chip", "No price data for this ticker"));
@@ -221,7 +244,14 @@ export default function (component) {
   const empty = (body, text, action, page) => {
     body.append(h("div", "empty", text)); const b = h("button", "cta", action); b.onclick = () => open(page); body.append(b);
   };
-  card("⚖", "Said vs did", "Management's promises, checked against later reports", "said", body => {
+  const tools = d.tools || [];
+  const unavailable = (icon, name, text) => {
+    const a = h("article", "card glass"), head = h("header"), t = h("div");
+    t.append(h("b", null, name), h("span", null, "Not available in this market yet"));
+    head.append(h("i", null, icon), t, h("span")); a.append(head, h("div", "empty", text)); cards.append(a);
+  };
+  if (!tools.includes("filings")) unavailable("⚖", "Said vs did", "Needs annual reports, which come with the India data feed (Phase 2).");
+  else card("⚖", "Said vs did", "Management's promises, checked against later reports", "said", body => {
     if (!c.said) return empty(body, "Promises not checked yet.", "Check promises", "said");
     const big = h("div", "big", c.said.credibility == null ? "—" : c.said.credibility + "%");
     big.append(h("small", null, c.said.too_few ? "too few to judge" : "credibility"));
@@ -231,7 +261,13 @@ export default function (component) {
     body.append(big, split, h("div", "sub", `Kept ${c.said.kept}, partly ${c.said.partly}, missed ${c.said.missed}, ` +
       `not mentioned again ${c.said.dropped}, still open ${c.said.open}`));
   });
-  card("◎", "Insider buying", "Open-market, last 90 days", "radar", body => {
+  if (tools.includes("deals")) card("◎", "Big deals", "NSE bulk and block deals, last 90 days", "deals", body => {
+    if (!c.deals) return empty(body, "No bulk or block deals in 90 days.", "Open the deals radar", "deals");
+    const big = h("div", "big", (c.deals.net_crore > 0 ? "+" : "") + c.deals.net_crore); big.append(h("small", null, "₹ cr net"));
+    body.append(big, h("div", "sub", `${c.deals.days} deal day${c.deals.days === 1 ? "" : "s"}, ${c.deals.signals} signal${c.deals.signals === 1 ? "" : "s"}, last on ${c.deals.last}`));
+  });
+  else if (!tools.includes("insider")) unavailable("◎", "Insider buying", "Japan doesn't publish officers' share trades as data. A large-shareholder radar is planned.");
+  else card("◎", "Insider buying", "Open-market, last 90 days", "radar", body => {
     if (!c.insiders) return empty(body, "No insider buying recorded in 90 days.", "Scan the radar", "radar");
     const row = h("div", "ringrow"), ring = s("svg", { width: 58, height: 58, viewBox: "0 0 62 62", "aria-hidden": "true" });
     const frac = Math.min(c.insiders.insiders, 5) / 5;
@@ -243,7 +279,8 @@ export default function (component) {
     txt.append(big, h("div", "sub", `${money(c.insiders.total)} bought, last on ${c.insiders.last}`));
     row.append(ring, txt); body.append(row);
   });
-  card("▤", "10-K change", c.filing ? "10-K filed " + c.filing.filed + " vs the year before" : "Risk Factors and MD&A vs last year", "filings", body => {
+  if (!tools.includes("filings")) unavailable("▤", "Filing changes", "Needs annual reports, which come with the India data feed (Phase 2).");
+  else card("▤", d.market === "JP" ? "Annual report change" : "10-K change", c.filing ? "10-K filed " + c.filing.filed + " vs the year before" : "Risk Factors and MD&A vs last year", "filings", body => {
     if (!c.filing) return empty(body, "Not scored yet.", "Score it", "filings");
     const big = h("div", "big", c.filing.combined); big.append(h("small", null, "/ 100"));
     const bars = h("div", "bars"), top = Math.max(...c.filing.history, 1);
@@ -259,7 +296,7 @@ export default function (component) {
       h("div", "sub", `${c.record.live} live, ${c.record.calls - c.record.live} from backtests`));
   });
 
-  root.append(hero, mid, dial, cards);
+  root.append(marketsRow, hero, mid, dial, cards);
 
   // The price line, drawn for the chosen range.
   const RANGES = [["1M", (d.daily_1y || []).slice(-21), "day"], ["3M", (d.daily_1y || []).slice(-63), "day"],

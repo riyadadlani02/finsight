@@ -10,7 +10,7 @@ LABELS = {"kept": ("Kept", ui.BULL), "partly": ("Partly kept", ui.LINE), "missed
           "dropped": ("Not mentioned again", ui.MUTED), "open": ("Still open", ui.MUTED),
           "unchecked": ("Couldn't verify", ui.AMBER)}
 
-ticker = cockpit.clean_ticker(st.text_input("Ticker", value=st.query_params.get("ticker", "AAPL"), max_chars=12)) or ""
+ticker = cockpit.clean_ticker(st.text_input("Ticker", value=st.query_params.get("ticker", "AAPL"), max_chars=20)) or ""
 if not ticker:
     st.stop()
 st.query_params["ticker"] = ticker

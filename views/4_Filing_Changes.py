@@ -22,7 +22,7 @@ def paragraphs(paras: list[changes.Para], redline: bool = False) -> None:
 
 def company_tab() -> None:
     current = st.query_params.get("ticker", "AAPL")
-    ticker = st.text_input("Ticker", value=current, max_chars=10).strip().upper()
+    ticker = st.text_input("Ticker", value=current, max_chars=20).strip().upper()
     if not ticker:
         return
     if ticker != current:

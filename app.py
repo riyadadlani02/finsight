@@ -3,13 +3,15 @@ from datetime import date
 
 import streamlit as st
 
-from core import cockpit, config, db, ui
+from core import cockpit, config, db, markets, ui
 from core.mule import neo4j_store
 
 DEBATE, RADAR, MULE = "views/1_Bull_vs_Bear.py", "views/2_Insider_Radar.py", "views/3_Mule_Ring_Detector.py"
 CHANGES, RECORD = "views/4_Filing_Changes.py", "views/5_Track_Record.py"
 SAID = "views/7_Said_vs_Did.py"
-OPENS = {"said": SAID, "debate": DEBATE, "radar": RADAR, "filings": CHANGES, "record": RECORD}  # cockpit card -> page
+DEALS = "views/6_Deals_Radar.py"
+OPENS = {"said": SAID, "debate": DEBATE, "radar": RADAR, "deals": DEALS, "filings": CHANGES, "record": RECORD}  # card -> page
+FLAGSHIP = {"US": "AAPL", "IN": "RELIANCE.NS", "JP": "7203.T"}  # where switching market lands
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -35,16 +37,20 @@ def home() -> None:
     ticker = cockpit.clean_ticker(st.query_params.get("ticker")) or "AAPL"
     with st.spinner(f"Loading {ticker}..."):
         data = cockpit_data(ticker, date.today())
-    switched, page = cockpit.render(data)
+    switched, page, market = cockpit.render(data)
+    if market in FLAGSHIP and market != data["market"]:
+        st.query_params["ticker"] = FLAGSHIP[market]
+        st.rerun()
     if page in OPENS:
         st.switch_page(OPENS[page], query_params={"ticker": ticker})
     if switched:
-        clean = cockpit.clean_ticker(switched)
-        if clean and clean != ticker:
-            st.query_params["ticker"] = clean
+        here = markets.get(data["market"])
+        company = here.resolve(switched) if cockpit.clean_ticker(switched) else None
+        if company and company.ticker != ticker:
+            st.query_params["ticker"] = company.ticker
             st.rerun()
-        elif not clean:
-            st.toast("That isn't a ticker. Use letters, numbers, dots or dashes.")
+        elif not company:
+            st.toast(f"Couldn't find {switched[:12]} in {here.name}. Switch market first if it's listed elsewhere.")
     st.caption("Research tooling only. Nothing here is investment advice.")
     with st.expander("Setup"):
         setup()
@@ -58,7 +64,7 @@ st.navigation([
     st.Page(RADAR, title="Insider radar"),
     st.Page(CHANGES, title="Filing changes"),
     st.Page(RECORD, title="Track record"),
-    st.Page("views/6_Deals_Radar.py", title="Deals radar (India)"),
+    st.Page(DEALS, title="Deals radar (India)"),
     st.Page(MULE, title="Mule ring detector"),
     st.Page(DEBATE, title="Past debates"),
 ], position="top").run()
