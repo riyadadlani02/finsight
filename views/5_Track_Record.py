@@ -52,21 +52,6 @@ if graded.empty:
     st.info("No live calls yet. They're recorded when you run a debate, scan the insider radar, or score a 10-K."
             if mode == "live" else "No backtest yet. Run one below to grade the signals on history.")
 else:
-    board = track.scoreboard(graded, horizon)
-    rows = [{"Signal": LABELS.get((r.kind, r.direction), f"{r.kind} {r.direction:+d}"), "Calls": r.n, "Months": r.months,
-             "Hit rate": "n/a" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}",
-             "Hit rate 95%": "needs 2+ months" if pd.isna(r.hit_lo) else f"{r.hit_lo:.0%} to {r.hit_hi:.0%}",
-             "Mean vs SPY": pct(r.mean), "Mean 95%": interval(r.mean_lo, r.mean_hi), "Median": pct(r.median),
-             "Verdict": "Too few to judge" if r.too_few else ""} for r in board.itertuples()]
-    with ui.panel("board"):
-        st.subheader(f"{horizon}-day results, {mode} calls")
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        pending = int((graded[f"status_{horizon}"] == "pending").sum())
-        st.caption(f"A hit means the stock moved against SPY the way the signal said. Intervals resample whole months, "
-                   f"because calls in the same month share one market. {pending:,} calls are still inside their "
-                   f"{horizon}-day window. {int(board['dropped'].sum()):,} calls had no price data (often delisted "
-                   "companies) and are left out, which flatters results a little.")
-
     if mode == "backtest" and (graded["kind"] == "filing_change").any():
         s = track.spread(graded[graded["kind"] == "filing_change"], horizon)
         with ui.panel("spread"):
@@ -76,9 +61,28 @@ else:
             else:
                 st.metric(f"Barely changed minus changed a lot, {horizon} days", pct(s["spread"]),
                           help="Mean excess return of the bottom fifth by change score minus the top fifth.")
+                if s["too_few"]:
+                    st.warning("Too few to judge: each side needs at least 20 calls over 6 months. Run the filing "
+                               "backtest on more companies.", icon=":material/info:")
                 st.caption(f"95% interval {interval(s['lo'], s['hi'])}, {s['n']:,} calls over {s['months']} months. "
                            "The universe is today's S&P 100, so every company in it survived: absolute returns are "
                            "biased upward, and this gap between the two groups is the fairer number.")
+
+    board = track.scoreboard(graded, horizon)
+    rows = [{"Signal": LABELS.get((r.kind, r.direction), f"{r.kind} {r.direction:+d}"), "Calls": r.n, "Months": r.months,
+             "Hit rate": "n/a" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}",
+             "Hit rate 95%": "needs 2+ months" if pd.isna(r.hit_lo) else f"{r.hit_lo:.0%} to {r.hit_hi:.0%}",
+             "Mean vs SPY": pct(r.mean), "Mean 95%": interval(r.mean_lo, r.mean_hi), "Median": pct(r.median),
+             "Median 95%": interval(r.median_lo, r.median_hi),
+             "Verdict": "Too few to judge" if r.too_few else ""} for r in board.itertuples()]
+    with ui.panel("board"):
+        st.subheader(f"{horizon}-day results, {mode} calls")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        pending = int((graded[f"status_{horizon}"] == "pending").sum())
+        st.caption(f"A hit means the stock moved against SPY the way the signal said. Intervals resample whole months, "
+                   f"because calls in the same month share one market. {pending:,} calls are still inside their "
+                   f"{horizon}-day window. {int(board['dropped'].sum()):,} calls had no price data (often delisted "
+                   "companies) and are left out, which flatters results a little.")
 
     kinds = sorted(graded["kind"].unique())
     kind = st.selectbox("Path after the call", kinds, format_func=lambda k: {"debate": "Debates", "insider_cluster":
@@ -96,10 +100,7 @@ else:
         st.caption("Average path, signed so that up means the signal was right; the band is the 95% interval.")
 
     with st.expander(f"All {len(graded):,} {mode} calls"):
-        view = graded.assign(
-            source=[f"/Bull_vs_Bear?ticker={t}" if k == "debate" else
-                    f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={t}&type={'4' if k == 'insider_cluster' else '10-K'}"
-                    for k, t in zip(graded["kind"], graded["ticker"])])
+        view = graded.assign(source=[track.source_url(row) for row in graded.to_dict("records")])
         st.dataframe(view.sort_values("public_date", ascending=False), hide_index=True, width="stretch",
                      column_order=["public_date", "kind", "ticker", "direction", "strength", f"excess_{horizon}",
                                    f"status_{horizon}", "source"],
@@ -113,9 +114,12 @@ with st.expander("Run backtests"):
     years = st.slider("Insider history", 1, 20, 5, format="%d years")
     if st.button("Run insider backtest", type="primary"):
         bar = st.progress(0.0)
-        n = track.backtest_insider(years, progress=lambda i, total: bar.progress(i / total, f"Quarter {i} of {total}"))
+        result = track.backtest_insider(years, progress=lambda i, total: bar.progress(i / total, f"Quarter {i} of {total}"))
         st.cache_data.clear()
-        st.success(f"Recorded {n:,} new insider cluster calls.")
+        st.success(f"Recorded {result['recorded']:,} new insider cluster calls.")
+        if result["skipped"]:
+            st.warning(f"The SEC didn't serve {', '.join(result['skipped'])}: not published yet, or the request was refused "
+                       "or timed out. Run again later to fill them in; quarters already downloaded are kept.")
     tickers = st.text_area("Filing backtest universe (today's S&P 100 by default)", "\n".join(track.universe()), height=120)
     if st.button("Run filing backtest", type="primary"):
         names = [t.strip().upper() for t in tickers.replace(",", "\n").split() if t.strip()]

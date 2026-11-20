@@ -15,6 +15,7 @@ from functools import lru_cache
 from html import escape
 from typing import Callable, Literal
 
+import numpy as np
 import pandas as pd
 import requests
 from sqlalchemy import insert, select
@@ -24,6 +25,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from . import config, db, debate, edgar, track
 
 UNCHANGED, REWORDED = 0.9, 0.5  # paragraph match thresholds (design doc)
+SECTIONS = ("Risk Factors", "MD&A")
 Kind = Literal["added", "removed", "reworded", "unchanged"]
 
 
@@ -70,10 +72,9 @@ def diff_sections(old: str, new: str) -> SectionDiff:
     if old_p and new_p:
         sims = _cosine(old_p + new_p)[len(old_p):, :len(old_p)]
         used_old: set[int] = set()
-        pairs = sorted(((sims[n, o], n, o) for n in range(len(new_p)) for o in range(len(old_p))), reverse=True)
-        for score, n, o in pairs:
-            if score < REWORDED:
-                break
+        cand = np.argwhere(sims >= REWORDED)  # only plausible pairs: n*m tuples blew up on long sections
+        for n, o in cand[np.argsort(-sims[cand[:, 0], cand[:, 1]], kind="stable")]:
+            n, o, score = int(n), int(o), float(sims[n, o])
             if n not in matched and o not in used_old:
                 matched[n] = (o, float(score))
                 used_old.add(o)
@@ -114,11 +115,13 @@ class YearChange:
     filed: str
     scores: dict[str, int]
     combined: int  # mean of the sections found in both years
+    cik: str = ""
 
 
 @lru_cache(maxsize=48)  # ponytail: in-process cache of full section text; a disk cache if reruns get slow
 def _sections(key: tuple) -> dict[str, str]:
-    return edgar.filing_sections(edgar.Filing(*key), max_chars=10**7)
+    found = edgar.filing_sections(edgar.Filing(*key), max_chars=10**7)
+    return {k: v for k, v in found.items() if k in SECTIONS}  # never the whole-filing fallback
 
 
 def sections(filing: edgar.Filing) -> dict[str, str]:
@@ -165,7 +168,7 @@ def score_company(ticker: str, years: int = 6, engine=None) -> list[YearChange]:
                              date.fromisoformat(new.filed), new.accession, issuer_cik=company["cik"], engine=engine)
         if stored:  # neither section found in both years: nothing to compare
             out.append(YearChange(new.accession, old.accession, new.filed, stored,
-                                  round(sum(stored.values()) / len(stored))))
+                                  round(sum(stored.values()) / len(stored)), company["cik"]))
     return out
 
 

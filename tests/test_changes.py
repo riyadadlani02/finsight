@@ -117,3 +117,14 @@ def test_score_company_records_live_call_once_cutoffs_exist(engine, monkeypatch)
     (y,) = changes.score_company("acme", engine=engine)
     live = track.load_calls(engine, mode="live")
     assert y.combined >= 72 and live[["kind", "direction", "source_ref"]].values.tolist() == [["filing_change", -1, "acc-new"]]
+
+
+def test_sections_ignore_whole_filing_fallback(monkeypatch):
+    f = edgar.Filing("0000000042", "acc-x", "10-K", "2026-02-01", "2025-12-31", "doc.htm")
+    changes._sections.cache_clear()
+    monkeypatch.setattr(edgar, "filing_sections", lambda filing, max_chars: {"Filing text (opening)": "whole filing"})
+    assert changes.sections(f) == {}  # no Risk Factors or MD&A found: nothing to score, never the whole 10-K
+    changes._sections.cache_clear()
+    monkeypatch.setattr(edgar, "filing_sections", lambda filing, max_chars: {"Risk Factors": "a", "MD&A": "b", "Other": "c"})
+    assert set(changes.sections(f)) == {"Risk Factors", "MD&A"}
+    changes._sections.cache_clear()

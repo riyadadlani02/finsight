@@ -97,6 +97,14 @@ calls = Table(
     UniqueConstraint("kind", "source_ref", "mode", name="uq_calls_source"),
 )
 
+# When each ticker was last fetched and from what start date (core/prices.py).
+price_fetches = Table(
+    "price_fetches", metadata,
+    Column("ticker", String(20), primary_key=True),
+    Column("fetched", Date, nullable=False),
+    Column("start", Date, nullable=False),
+)
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),

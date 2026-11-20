@@ -98,7 +98,7 @@ if db.check()[0]:
     for row in past:
         label = (f"**{row['ticker']}**, {row['created_at']:%d %b %Y %H:%M}: {row['winner']} "
                  f"({row['bull_score']} to {row['bear_score']})")
-        with st.expander(label):
+        with st.expander(label, expanded=str(row["id"]) == st.query_params.get("debate")):
             for j, turn in enumerate(json.loads(row["transcript_json"])):
                 show_turn(turn, f"h{row['id']}-{j}")
             show_verdict(json.loads(row["verdict_json"]))

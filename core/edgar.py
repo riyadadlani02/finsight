@@ -98,14 +98,18 @@ class Filing:
 
 def recent_filings(cik: str, forms: tuple[str, ...], limit: int = 50) -> list[Filing]:
     """Most recent filings of the given form types, newest first."""
-    recent = _get(f"https://data.sec.gov/submissions/CIK{cik}.json").json()["filings"]["recent"]
-    out = []
-    for i, form in enumerate(recent["form"]):
-        if form in forms:
-            out.append(Filing(cik, recent["accessionNumber"][i], form, recent["filingDate"][i],
-                              recent["reportDate"][i], recent["primaryDocument"][i]))
-            if len(out) >= limit:
-                break
+    filings = _get(f"https://data.sec.gov/submissions/CIK{cik}.json").json()["filings"]
+    out: list[Filing] = []
+    # "recent" holds the last ~1,000 filings; heavy filers (banks issuing notes daily) push older ones into files[].
+    pages = [filings["recent"]] + [f["name"] for f in filings.get("files", [])]
+    for page in pages:
+        cols = page if isinstance(page, dict) else _get(f"https://data.sec.gov/submissions/{page}").json()
+        for i, form in enumerate(cols["form"]):
+            if form in forms:
+                out.append(Filing(cik, cols["accessionNumber"][i], form, cols["filingDate"][i],
+                                  cols["reportDate"][i], cols["primaryDocument"][i]))
+                if len(out) >= limit:
+                    return out
     return out
 
 

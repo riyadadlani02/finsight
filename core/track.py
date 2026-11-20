@@ -104,7 +104,7 @@ def _month(d) -> str:
 def scoreboard(graded: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """One row per (kind, direction, mode). Neutral calls (direction 0) aren't graded."""
     cols = ["kind", "direction", "mode", "n", "months", "hit_rate", "hit_lo", "hit_hi", "mean", "mean_lo", "mean_hi",
-            "median", "too_few", "dropped"]
+            "median", "median_lo", "median_hi", "too_few", "dropped"]
     rows = []
     status, excess, hit = f"status_{horizon}", f"excess_{horizon}", f"hit_{horizon}"
     for (kind, direction, mode), g in graded[graded["direction"] != 0].groupby(["kind", "direction", "mode"]):
@@ -117,6 +117,7 @@ def scoreboard(graded: pd.DataFrame, horizon: int) -> pd.DataFrame:
             row.update(hit_rate=hits.mean(), mean=ok[excess].mean(), median=ok[excess].median())
             row["hit_lo"], row["hit_hi"] = block_ci(hits, months)
             row["mean_lo"], row["mean_hi"] = block_ci(ok[excess], months)
+            row["median_lo"], row["median_hi"] = block_ci(ok[excess], months, stat=np.median)
         row["too_few"] = row["n"] < MIN_CALLS or row["months"] < MIN_MONTHS
         rows.append(row)
     return pd.DataFrame(rows, columns=cols)
@@ -142,7 +143,10 @@ def spread(graded: pd.DataFrame, horizon: int, n: int = 2000, seed: int = 0) -> 
         rng = np.random.default_rng(seed)
         draws = [stat(parts[rng.integers(0, len(parts), len(parts))]) for _ in range(n)]
         lo, hi = np.nanpercentile(draws, [2.5, 97.5])
-    return {"spread": float(value), "lo": float(lo), "hi": float(hi), "n": len(ok), "months": int(months.nunique())}
+    per_side = ok.groupby("direction").agg(n=("direction", "size"), months=("public_date", lambda d: d.map(_month).nunique()))
+    too_few = bool((per_side["n"] < MIN_CALLS).any() or (per_side["months"] < MIN_MONTHS).any())
+    return {"spread": float(value), "lo": float(lo), "hi": float(hi), "n": len(ok), "months": int(months.nunique()),
+            "too_few": too_few}
 
 
 def event_curve(calls: pd.DataFrame, closes: pd.DataFrame, days: int = 180) -> pd.DataFrame:
@@ -221,26 +225,48 @@ def backtest_filings(tickers: list[str], engine=None, progress: Progress | None 
         cutoffs = tuple(np.percentile([y.combined for _, y in group], [20, 80]))
         for ticker, y in group:
             recorded += record("filing_change", ticker, filing_direction(y.combined, cutoffs), y.combined,
-                               date.fromisoformat(y.filed), y.accession, mode="backtest", engine=engine)
+                               date.fromisoformat(y.filed), y.accession, mode="backtest", issuer_cik=y.cik or None,
+                               engine=engine)
     return recorded
 
 
-def backtest_insider(years: int = 5, engine=None, progress: Progress | None = None, today: date | None = None) -> int:
-    """Cluster events from the SEC's quarterly data sets, with the radar's default thresholds."""
+def backtest_insider(years: int = 5, engine=None, progress: Progress | None = None, today: date | None = None) -> dict:
+    """Cluster events from the SEC's quarterly data sets, with the radar's default thresholds.
+
+    Returns {"recorded": new calls, "skipped": quarters the SEC didn't serve, e.g. "2026 Q4"}.
+    """
     today = today or date.today()
     months = pd.date_range(pd.Timestamp(today) - pd.DateOffset(years=years), pd.Timestamp(today), freq="MS")
     quarters = sorted({(m.year, (m.month - 1) // 3 + 1) for m in months})
-    frames = []
+    frames, skipped = [], []
     for i, (year, q) in enumerate(quarters, 1):
         path = bulk_insider.download(year, q)
-        if path is not None:  # None: not published yet
+        if path is None:  # not published yet, refused, or offline
+            skipped.append(f"{year} Q{q}")
+        else:
             frames.append(bulk_insider.load_quarter(path))
         if progress:
             progress(i, len(quarters))
     if not frames:
-        return 0
+        return {"recorded": 0, "skipped": skipped}
     buys = pd.concat(frames, ignore_index=True)  # one frame, so clusters spanning a quarter end are found
     events = insider.cluster_events(buys[~buys["planned_10b5_1"].astype(bool)])
-    return sum(record("insider_cluster", e.ticker, 1, e.score, e.public_date, f"{e.issuer_cik}:{e.first_buy}",
-                      mode="backtest", issuer_cik=e.issuer_cik, engine=engine)
-               for e in events.itertuples() if e.ticker)
+    recorded = sum(record("insider_cluster", e.ticker, 1, e.score, e.public_date, f"{e.issuer_cik}:{e.first_buy}",
+                          mode="backtest", issuer_cik=e.issuer_cik, engine=engine)
+                   for e in events.itertuples() if e.ticker)
+    return {"recorded": recorded, "skipped": skipped}
+
+
+def source_url(call) -> str:
+    """Where a call came from: the debate itself, the 10-K's filing index, or the issuer's Form 4s up to the event."""
+    kind, ticker = call["kind"], call["ticker"]
+    if kind == "debate":
+        return f"/Bull_vs_Bear?ticker={ticker}&debate={call['source_ref']}"
+    raw = call.get("issuer_cik")
+    has_cik = isinstance(raw, str) and raw.strip() != ""  # missing arrives as None or NaN
+    cik = raw if has_cik else ticker
+    if kind == "filing_change" and has_cik:
+        acc = call["source_ref"]
+        return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc.replace('-', '')}/{acc}-index.htm"
+    form, dateb = ("4", f"&dateb={call['public_date']:%Y%m%d}") if kind == "insider_cluster" else ("10-K", "")
+    return f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={form}{dateb}"

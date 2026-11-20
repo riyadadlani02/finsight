@@ -30,10 +30,12 @@ def download(year: int, q: int, dest: Path = DATA / "sec_bulk") -> Path | None:
         return path
     try:
         content = edgar._get(quarter_url(year, q)).content
-    except (edgar.EdgarError, requests.HTTPError):
+    except (edgar.EdgarError, requests.RequestException):  # not published, refused, or offline
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    tmp = path.with_suffix(".part")
+    tmp.write_bytes(content)
+    tmp.replace(path)  # a half-written zip never sits in the cache
     return path
 
 

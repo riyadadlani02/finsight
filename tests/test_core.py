@@ -209,3 +209,14 @@ def test_filed_column_migration(tmp_path):
                           "line_no INTEGER NOT NULL, tx_date DATE)"))
     eng = db.engine(url)
     assert "filed" in {c["name"] for c in inspect(eng).get_columns("insider_tx")}
+
+
+def test_recent_filings_pages_older_files(monkeypatch):
+    # Heavy filers (big banks) push older 10-Ks out of "recent" into extra files.
+    recent = {"filings": {"recent": {"form": ["424B2", "10-K"], "accessionNumber": ["a1", "a2"], "filingDate": ["2026-03-01", "2026-02-01"],
+                                     "reportDate": ["", "2025-12-31"], "primaryDocument": ["x.htm", "k.htm"]},
+                          "files": [{"name": "CIK0000000001-submissions-001.json"}]}}
+    older = {"form": ["10-K", "424B2"], "accessionNumber": ["a3", "a4"], "filingDate": ["2025-02-01", "2025-01-15"],
+             "reportDate": ["2024-12-31", ""], "primaryDocument": ["k2.htm", "y.htm"]}
+    monkeypatch.setattr(edgar, "_get", lambda url: type("R", (), {"json": lambda self: older if url.endswith("-001.json") else recent})())
+    assert [f.accession for f in edgar.recent_filings("0000000001", ("10-K",), limit=6)] == ["a2", "a3"]

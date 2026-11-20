@@ -144,7 +144,8 @@ def test_backtest_insider_records_cluster_events(engine, monkeypatch):
                          buy(3, "2025-11-05", "2025-11-06", planned=True), buy(4, "2025-11-06", "2025-11-07")])
     monkeypatch.setattr(bulk_insider, "download", lambda y, q, dest=None: f"{y}q{q}" if (y, q) == (2025, 4) else None)
     monkeypatch.setattr(bulk_insider, "load_quarter", lambda path: rows)
-    assert track.backtest_insider(years=1, engine=engine, today=date(2026, 3, 1)) == 1
+    result = track.backtest_insider(years=1, engine=engine, today=date(2026, 3, 1))
+    assert result["recorded"] == 1 and "2025 Q4" not in result["skipped"] and "2025 Q3" in result["skipped"]
     (call,) = track.load_calls(engine, mode="backtest").itertuples()
     assert (call.kind, call.ticker, call.public_date) == ("insider_cluster", "ACME", date(2025, 11, 7))  # 10b5-1 buy excluded
 
@@ -203,3 +204,63 @@ def test_card_data_fills_cards(engine, monkeypatch):
     assert (cards["insiders"]["insiders"], cards["insiders"]["total"]) == (2, 100_000.0)
     assert cards["filing"]["combined"] == 30 and cards["filing"]["history"] == [10, 30]
     assert cards["record"]["calls"] == 1
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_closes_keeps_cache_when_refetch_fails(engine):
+    good = lambda tickers, start: pd.DataFrame({"AAA": [10.0, 11.0]}, index=pd.bdate_range("2026-01-05", periods=2))
+    prices.closes(["AAA"], date(2026, 1, 1), engine=engine, fetch=good)
+    with engine.begin() as conn:  # pretend that was yesterday
+        conn.execute(db.prices.update().values(fetched=date(2000, 1, 1)))
+        conn.execute(db.price_fetches.update().values(fetched=date(2000, 1, 1)))
+    out = prices.closes(["AAA"], date(2026, 1, 1), engine=engine, fetch=lambda t, s: pd.DataFrame())  # Yahoo failed
+    assert out["AAA"].tolist() == [10.0, 11.0]
+
+
+def test_closes_late_listing_fetched_once(engine):
+    calls = []
+    def fetch(tickers, start):
+        calls.append(tickers)
+        return pd.DataFrame({"NEW": [5.0, 6.0]}, index=pd.bdate_range("2026-03-02", periods=2))  # listed in March
+    for _ in range(2):
+        prices.closes(["NEW"], date(2026, 1, 1), engine=engine, fetch=fetch)
+    assert len(calls) == 1
+
+
+def test_download_quarter_survives_network_errors(tmp_path, monkeypatch):
+    import requests
+    def down(url):
+        raise requests.ConnectionError("offline")
+    monkeypatch.setattr(edgar, "_get", down)
+    assert bulk_insider.download(2025, 4, dest=tmp_path) is None
+
+
+def test_scoreboard_median_interval_and_spread_too_few():
+    rng = np.random.default_rng(3)
+    graded = pd.DataFrame({"kind": "debate", "direction": 1, "mode": "live", "status_30": "graded",
+                           "public_date": [date(2026, m, 10) for m in range(1, 9) for _ in range(4)],
+                           "excess_30": rng.normal(0.01, 0.05, 32)})
+    graded["hit_30"] = graded["excess_30"] > 0
+    row = track.scoreboard(graded, 30).iloc[0]
+    assert row["median_lo"] < row["median"] < row["median_hi"]
+    few = graded.iloc[:16]  # 16 calls a side over 4 months
+    assert track.spread(pd.concat([few, few.assign(direction=-1)], ignore_index=True), 30)["too_few"]
+    both = pd.concat([graded, graded.assign(direction=-1)], ignore_index=True)  # 32 a side over 8 months
+    assert not track.spread(both, 30)["too_few"]
+
+
+def test_source_url_points_at_the_exact_source():
+    assert track.source_url({"kind": "debate", "ticker": "ACME", "source_ref": "7"}) == "/Bull_vs_Bear?ticker=ACME&debate=7"
+    assert track.source_url({"kind": "filing_change", "ticker": "ACME", "issuer_cik": "0000000042",
+                             "source_ref": "0001-26-000002"}) == \
+        "https://www.sec.gov/Archives/edgar/data/42/000126000002/0001-26-000002-index.htm"
+    url = track.source_url({"kind": "insider_cluster", "ticker": "ACME", "issuer_cik": "0000000042",
+                            "source_ref": "0000000042:2026-11-02", "public_date": date(2026, 11, 9)})
+    assert "CIK=0000000042" in url and "type=4" in url and "dateb=20261109" in url
+
+
+def test_source_url_without_cik_from_a_dataframe_row():
+    row = {"kind": "filing_change", "ticker": "ACME", "issuer_cik": np.nan, "source_ref": "0001-26-000002",
+           "public_date": date(2026, 2, 1)}  # a missing CIK arrives as NaN from the calls table
+    assert track.source_url(row) == "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=ACME&type=10-K"
