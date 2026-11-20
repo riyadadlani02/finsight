@@ -184,3 +184,11 @@ def test_load_csv_layouts():
     assert data.account_labels(plain) is None and len(plain) == 2
     with pytest.raises(ValueError):
         data.load_csv(io.StringIO("x,y\n1,2\n"))
+
+
+def test_theme_tokens():
+    from core import ui
+    assert (ui.BULL, ui.BEAR, ui.LINE) == ("#5CC9A7", "#E06A78", "#F4F8FA")
+    assert "backdrop-filter" in ui.CSS and "Manrope" in ui.CSS and "#1B262D" in ui.CSS
+    # primaryColor is near-white, so primary buttons need dark text to stay readable
+    assert '[data-testid^="stBaseButton-primary"]' in ui.CSS

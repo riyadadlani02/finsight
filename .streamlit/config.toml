@@ -8,26 +8,26 @@ gatherUsageStats = false
 [client]
 toolbarMode = "minimal"
 
-# Ledger paper, slate ink, SEC ultramarine; teal = bull, claret = bear.
+# Cockpit: slate-blue stage, light type, frosted glass. See core/ui.py and the design doc.
 [theme]
-base = "light"
-primaryColor = "#2340C4"
-backgroundColor = "#F2F4F1"
-secondaryBackgroundColor = "#E5EAE6"
-textColor = "#17212B"
-linkColor = "#2340C4"
-borderColor = "#D3DAD6"
-dataframeBorderColor = "#D3DAD6"
-dataframeHeaderBackgroundColor = "#E5EAE6"
-greenColor = "#17705A"
-redColor = "#B0303F"
-font = "Public Sans:https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,300..900;1,300..900&display=swap"
-headingFontWeights = [800, 700, 700]
+base = "dark"
+primaryColor = "#F4F8FA"
+backgroundColor = "#1B262D"
+secondaryBackgroundColor = "#2D404C"
+textColor = "#EEF3F6"
+linkColor = "#F4F8FA"
+borderColor = "rgba(255,255,255,0.11)"
+dataframeBorderColor = "rgba(255,255,255,0.08)"
+dataframeHeaderBackgroundColor = "#24343E"
+greenColor = "#5CC9A7"
+redColor = "#E06A78"
+font = "Manrope:https://fonts.googleapis.com/css2?family=Manrope:wght@200..700&display=swap"
+headingFontWeights = [300, 300, 400]
 headingFontSizes = ["2.6rem", "1.6rem", "1.2rem"]
-baseRadius = "4px"
-buttonRadius = "4px"
-chartCategoricalColors = ["#2340C4", "#17705A", "#B0303F", "#8A6A1F", "#5D4BA8", "#56656D"]
+baseRadius = "14px"
+buttonRadius = "999px"
+chartCategoricalColors = ["#F4F8FA", "#5CC9A7", "#E06A78", "#E2B867", "#8FA8FF", "#9AABB6"]
 
 [theme.sidebar]
-backgroundColor = "#E5EAE6"
-secondaryBackgroundColor = "#F2F4F1"
+backgroundColor = "#1B262D"
+secondaryBackgroundColor = "#2D404C"

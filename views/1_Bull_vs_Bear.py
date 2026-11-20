@@ -52,7 +52,7 @@ def show_verdict(v: dict) -> None:
     with b:
         ui.point("Strongest bear point", v["strongest_bear_point"], ui.BEAR)
     if v.get("unsupported_claims"):
-        ui.point("Claims the filings don't support", v["unsupported_claims"], "#8A6A1F")
+        ui.point("Claims the filings don't support", v["unsupported_claims"], ui.AMBER)
     ui.point("What would change the verdict", v["what_would_change_the_verdict"])
 
 
