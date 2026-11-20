@@ -60,3 +60,50 @@ def test_grade_uses_each_markets_benchmark():
     g = track.grade(calls, closes, today=date(2026, 12, 31))
     assert abs(g.loc[0, "excess_30"]) < 1e-9  # moved exactly with the Nifty: no excess, even though SPY was flat
     assert set(track.benchmarks_for(calls)) == {"NIFTYBEES.NS"}
+
+
+# ---------------------------------------------------------------- India deals
+
+BULK = ("Date,Symbol,Security Name,Client Name,Buy/Sell,Quantity Traded,Trade Price / Wght. Avg. Price,Remarks\n"
+        "20-NOV-2026,ACME,Acme Ltd,ALPHA FUND,BUY,100000,300.00,-\n"        # ₹3 cr
+        "20-NOV-2026,ACME,Acme Ltd,BETA CAPITAL,BUY,100000,300.00,-\n"      # ₹3 cr: two buyers, ₹6 cr net
+        "20-NOV-2026,ACME,Acme Ltd,FAST TRADER LLP,BUY,500000,300.00,-\n"   # churner: bought and sold
+        "20-NOV-2026,ACME,Acme Ltd,FAST TRADER LLP,SELL,500000,301.00,-\n"
+        "20-NOV-2026,SOLO,Solo Ltd,ONE BIG FUND,BUY,1000000,100.00,-\n"     # ₹10 cr but only one buyer
+        "20-NOV-2026,DUMP,Dump Ltd,SELLER ONE,SELL,300000,100.00,-\n"
+        "20-NOV-2026,DUMP,Dump Ltd,SELLER TWO,SELL,300000,100.00,-\n")      # ₹6 cr net sold by two
+BLOCK = ("Date,Symbol,Security Name,Client Name,Buy/Sell,Quantity Traded,Trade Price / Wght. Avg. Price\n"
+         "21-NOV-2026,ACME,Acme Ltd,GAMMA LIFE,BUY,200000,310.00\n"
+         "21-NOV-2026,ACME,Acme Ltd,DELTA MF,BUY,200000,310.00\n")
+
+
+def test_parse_deals():
+    df = india.parse_deals(BULK, "bulk")
+    assert len(df) == 7 and set(df["side"]) == {"BUY", "SELL"} and (df["kind"] == "bulk").all()
+    row = df.iloc[0]
+    assert (row["date"], row["symbol"], row["client"], row["value"]) == (date(2026, 11, 20), "ACME", "ALPHA FUND", 30_000_000.0)
+
+
+def test_ingest_deals_is_idempotent(engine, monkeypatch):
+    monkeypatch.setattr(india, "_get", lambda url: type("R", (), {"text": BULK if url.endswith("bulk.csv") else BLOCK})())
+    assert india.ingest(engine=engine) == 9
+    assert india.ingest(engine=engine) == 0
+    assert len(india.load_deals(engine=engine)) == 9
+
+
+def test_deal_signals():
+    deals = pd.concat([india.parse_deals(BULK, "bulk"), india.parse_deals(BLOCK, "block")], ignore_index=True)
+    sig = india.deal_signals(deals).set_index("symbol")
+    assert sorted(sig.index) == ["ACME", "DUMP"]  # SOLO has one buyer; FAST TRADER's churn is ignored
+    assert sig.loc["ACME", "direction"] == 1 and sig.loc["ACME", "date"] == date(2026, 11, 20)  # next day's buying is the same run
+    assert sig.loc["ACME", "net_value"] == 60_000_000.0 and sig.loc["ACME", "churners"] == ["FAST TRADER LLP"]
+    assert sig.loc["DUMP", "direction"] == -1 and sig.loc["DUMP", "ticker"] == "DUMP.NS"
+
+
+def test_deal_signals_become_live_calls(engine, monkeypatch):
+    monkeypatch.setattr(india, "_get", lambda url: type("R", (), {"text": BULK if url.endswith("bulk.csv") else BLOCK})())
+    india.ingest(engine=engine)
+    assert india.record_live_calls(engine=engine, today=date(2026, 11, 21)) == 2
+    calls = track.load_calls(engine).set_index("ticker")
+    assert calls.loc["ACME.NS", "market"] == "IN" and calls.loc["ACME.NS", "kind"] == "deal"
+    assert calls.loc["DUMP.NS", "direction"] == -1 and calls.loc["ACME.NS", "source_ref"] == "ACME:2026-11-20"

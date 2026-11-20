@@ -107,6 +107,21 @@ price_fetches = Table(
     Column("start", Date, nullable=False),
 )
 
+# NSE bulk and block deals, one row per line of the daily files (core/markets/india.py).
+in_deals = Table(
+    "in_deals", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("date", Date, nullable=False, index=True),
+    Column("symbol", String(20), nullable=False, index=True),
+    Column("name", String(200)),
+    Column("client", String(200), nullable=False),
+    Column("side", String(4), nullable=False),     # BUY | SELL
+    Column("quantity", Float, nullable=False),
+    Column("price", Float, nullable=False),
+    Column("kind", String(5), nullable=False),     # bulk | block
+    UniqueConstraint("date", "symbol", "client", "side", "quantity", "price", "kind", name="uq_in_deals_line"),
+)
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),

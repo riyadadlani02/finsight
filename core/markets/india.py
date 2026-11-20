@@ -5,8 +5,11 @@ scripts, so those wait for the Phase 2 data feed (design doc).
 """
 from __future__ import annotations
 
+import argparse
 import time
+from datetime import date
 from functools import lru_cache
+from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -36,7 +39,6 @@ def _equity_csv() -> str:
 
 @lru_cache(maxsize=1)
 def _equity_list() -> dict[str, str]:
-    from io import StringIO
     df = pd.read_csv(StringIO(_equity_csv()), dtype=str)
     df.columns = [c.strip() for c in df.columns]
     return dict(zip(df["SYMBOL"].str.strip().str.upper(), df["NAME OF COMPANY"].str.strip()))
@@ -49,3 +51,105 @@ def resolve(text: str) -> Company | None:
     except requests.RequestException:
         return None
     return Company(f"{symbol}.NS", name, symbol, "IN") if name else None
+
+
+# ------------------------------------------------------------ bulk and block deals
+
+MIN_NET_VALUE = 5e7    # ₹5 crore of combined net buying (or selling)
+MIN_CLIENTS = 2        # by at least two clients on the same side
+COOLDOWN_DAYS = 30     # a run of buying days is one signal, not one per day
+_COLS = {"Date": "date", "Symbol": "symbol", "Security Name": "name", "Client Name": "client", "Buy/Sell": "side",
+         "Quantity Traded": "quantity", "Trade Price / Wght. Avg. Price": "price"}
+
+
+def parse_deals(text: str, kind: str) -> pd.DataFrame:
+    """One NSE deals file (bulk.csv or block.csv) as rows with a rupee value."""
+    df = pd.read_csv(StringIO(text), dtype=str)
+    df.columns = [c.strip() for c in df.columns]
+    df = df.rename(columns=_COLS)[list(_COLS.values())]
+    df["date"] = pd.to_datetime(df["date"].str.strip(), format="%d-%b-%Y").dt.date
+    for col in ("symbol", "client", "side"):
+        df[col] = df[col].str.strip().str.upper()
+    df["name"] = df["name"].str.strip()
+    df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["quantity", "price"])
+    df["kind"] = kind
+    df["value"] = df["quantity"] * df["price"]
+    return df.reset_index(drop=True)
+
+
+def ingest(engine=None) -> int:
+    """Store the latest bulk and block deal files (NSE publishes each trading day's in the evening). Idempotent."""
+    from sqlalchemy import insert, select
+    from .. import db
+    engine, t = engine or db.engine(), db.in_deals
+    df = pd.concat([parse_deals(_get(ARCHIVE + f"{kind}.csv").text, kind) for kind in ("bulk", "block")],
+                   ignore_index=True)
+    key = ["date", "symbol", "client", "side", "quantity", "price", "kind"]
+    with engine.connect() as conn:
+        seen = {tuple(r) for r in conn.execute(select(*[t.c[k] for k in key]).where(t.c.date.in_(set(df["date"]))))}
+    new = [r for r in df[key + ["name"]].to_dict("records") if tuple(r[k] for k in key) not in seen]
+    if new:
+        with engine.begin() as conn:
+            conn.execute(insert(t), new)
+    return len(new)
+
+
+def load_deals(engine=None, since: date | None = None) -> pd.DataFrame:
+    from sqlalchemy import select
+    from .. import db
+    engine, t = engine or db.engine(), db.in_deals
+    q = select(t) if since is None else select(t).where(t.c.date >= since)
+    df = pd.read_sql(q, engine)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["value"] = df["quantity"] * df["price"]
+    return df
+
+
+def deal_signals(deals: pd.DataFrame, min_net_value: float = MIN_NET_VALUE, min_clients: int = MIN_CLIENTS,
+                 cooldown_days: int = COOLDOWN_DAYS) -> pd.DataFrame:
+    """Days where clients that didn't churn net-bought (+1) or net-sold (-1) a stock in size."""
+    cols = ["symbol", "ticker", "name", "date", "direction", "net_value", "clients", "churners"]
+    days = []
+    for (day, symbol), g in deals.groupby(["date", "symbol"]):
+        sides = g.groupby("client")["side"].nunique()
+        churners = sorted(sides[sides > 1].index)   # bought and sold the same day: trading, not conviction
+        kept = g[~g["client"].isin(churners)]
+        per_client = kept["value"].where(kept["side"] == "BUY", -kept["value"]).groupby(kept["client"]).sum()
+        net = float(per_client.sum())
+        if net >= min_net_value and (per_client > 0).sum() >= min_clients:
+            direction, clients = 1, sorted(per_client[per_client > 0].index)
+        elif -net >= min_net_value and (per_client < 0).sum() >= min_clients:
+            direction, clients = -1, sorted(per_client[per_client < 0].index)
+        else:
+            continue
+        days.append({"symbol": symbol, "ticker": f"{symbol}.NS", "name": g["name"].iloc[0], "date": day,
+                     "direction": direction, "net_value": net, "clients": clients, "churners": churners})
+    out, last = [], {}
+    for d in sorted(days, key=lambda r: r["date"]):
+        k = (d["symbol"], d["direction"])
+        if k in last and (d["date"] - last[k]).days < cooldown_days:
+            continue
+        out.append(d)
+        last[k] = d["date"]
+    return pd.DataFrame(out, columns=cols)
+
+
+def record_live_calls(engine=None, today: date | None = None) -> int:
+    """Deal signals as live calls, graded against the Nifty 50."""
+    from .. import track
+    signals = deal_signals(load_deals(engine))
+    return sum(track.record("deal", s.ticker, s.direction, abs(s.net_value) / 1e7, s.date, f"{s.symbol}:{s.date}",
+                            engine=engine, today=today, market="IN") for s in signals.itertuples())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="India: NSE bulk and block deals")
+    parser.add_argument("command", choices=["ingest"])
+    parser.parse_args()
+    print(f"{ingest()} new deal lines stored, {record_live_calls()} new calls recorded")
+
+
+if __name__ == "__main__":
+    main()
