@@ -4,6 +4,8 @@ Research tools for public companies and payment fraud, built so every signal can
 
 ![The cockpit](docs/screenshots/cockpit.jpg)
 
+**Try the cockpit in your browser:** https://riyadadlani02.github.io/finsight/ (a snapshot of real data; the full app runs locally).
+
 The **cockpit** puts one company on stage: its price, the last Bull vs Bear verdict, recent insider buying, how much its latest 10-K changed, and the calls FinSight has made on it. Switch company from the name, and every card opens its tool for the same ticker.
 
 | Tool | What it answers | Built on |
@@ -104,6 +106,8 @@ core/mule/              synthetic and CSV data, graph features and rings, GNN, N
 core/db.py              database schema (SQLite or PostgreSQL)
 core/ui.py              shared styling
 ```
+
+The project site is built with `python scripts/build_site.py site/` and published to the `gh-pages` branch.
 
 Design notes: `docs/superpowers/specs/` (what and why) and `docs/superpowers/plans/` (how it was built).
 
