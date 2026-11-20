@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import func, select
 
-from core import config, db, insider, ui
+from core import cockpit, config, db, insider, ui
 
 ui.header("Insider radar", "Several insiders buying on the open market in the same window is a far stronger signal than one. Source: SEC Form 4. A lead to research, not investment advice.")
 
@@ -15,7 +15,8 @@ engine = db.engine()
 # ------------------------------------------------------------------ ingest
 with st.sidebar:
     st.header("Fetch Form 4 filings")
-    watch = st.text_input("Watchlist tickers", placeholder="AAPL, MSFT, NVDA")
+    watch = st.text_input("Watchlist tickers", value=cockpit.clean_ticker(st.query_params.get("ticker")) or "",
+                          placeholder="AAPL, MSFT, NVDA")
     if st.button("Scan watchlist") and watch.strip():
         bar = st.progress(0.0)
         try:
@@ -41,12 +42,13 @@ with st.sidebar:
     st.caption(f"Database: {total:,} transactions, latest {latest or 'n/a'}")
 
 # ------------------------------------------------------------------ detect
-a, b, c, d = st.columns(4)
-window = a.slider("Window (days)", 7, 90, 30)
-min_insiders = b.slider("Min. distinct insiders", 2, 8, 3)
-min_value = c.number_input("Min. total bought ($)", 0, 50_000_000, 100_000, step=50_000)
-lookback = d.slider("Look back (days)", 30, 365, 180)
-skip_plans = st.checkbox("Ignore pre-scheduled (10b5-1) trades", True)
+with ui.panel("thresholds"):
+    a, b, c, d = st.columns(4)
+    window = a.slider("Window (days)", 7, 90, 30)
+    min_insiders = b.slider("Min. distinct insiders", 2, 8, 3)
+    min_value = c.number_input("Min. total bought ($)", 0, 50_000_000, 100_000, step=50_000)
+    lookback = d.slider("Look back (days)", 30, 365, 180)
+    skip_plans = st.checkbox("Ignore pre-scheduled (10b5-1) trades", True)
 
 purchases = insider.load_purchases(engine, lookback, skip_plans)
 clusters = insider.find_clusters(purchases, window, min_insiders, float(min_value))
@@ -90,8 +92,7 @@ st.dataframe(
 
 left, right = st.columns(2)
 if row.ticker and left.button(f"Run a Bull vs Bear debate on {row.ticker}", type="primary"):
-    st.session_state["debate_ticker"] = row.ticker
-    st.switch_page("views/1_Bull_vs_Bear.py")
+    st.switch_page("views/1_Bull_vs_Bear.py", query_params={"ticker": row.ticker})
 if config.alert_webhook():
     if right.button("Send new clusters to webhook"):
         st.success(f"{insider.send_new_alerts(clusters, engine)} alerts sent")

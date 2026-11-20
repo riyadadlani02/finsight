@@ -3,13 +3,15 @@ import json
 import pandas as pd
 import streamlit as st
 
-from core import config, db, debate, ui
+from core import cockpit, config, db, debate, ui
 
 ui.header("Bull vs Bear", "Two Claude agents argue a stock from its SEC filings, then a judge scores who "
           "argued from the evidence. " + debate.DISCLAIMER)
 
-if "debate_ticker" in st.session_state:  # handed over from the insider radar
-    st.session_state["ticker_input"] = st.session_state.pop("debate_ticker")
+# A ticker in the URL (from the cockpit, radar or filing changes) fills the box once per new value.
+url_ticker = cockpit.clean_ticker(st.query_params.get("ticker"))
+if url_ticker and st.session_state.get("_url_ticker") != url_ticker:
+    st.session_state["ticker_input"] = st.session_state["_url_ticker"] = url_ticker
 st.session_state.setdefault("ticker_input", "AAPL")
 
 with st.form("run", border=False):
