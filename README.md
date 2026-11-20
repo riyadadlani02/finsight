@@ -94,3 +94,7 @@ core/ui.py              shared styling
 ```
 
 Research tooling only. Nothing here is investment advice.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
