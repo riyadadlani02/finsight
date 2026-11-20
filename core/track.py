@@ -14,7 +14,7 @@ import pandas as pd
 import requests
 from sqlalchemy import insert, select
 
-from . import bulk_insider, db, edgar, insider
+from . import bulk_insider, db, edgar, insider, markets
 
 HORIZONS = (30, 90, 180)
 BENCHMARK = "SPY"
@@ -27,7 +27,8 @@ def entry_date(public_date: date) -> date:
 
 
 def record(kind: str, ticker: str, direction: int, strength: float, public_date: date, source_ref: str,
-           mode: str = "live", issuer_cik: str | None = None, engine=None, today: date | None = None) -> bool:
+           mode: str = "live", issuer_cik: str | None = None, engine=None, today: date | None = None,
+           market: str | None = None) -> bool:
     """Store a call once. A live call must be recorded by its entry date, or it would be graded with hindsight."""
     engine, today, t = engine or db.engine(), today or date.today(), db.calls
     if mode == "live" and today > entry_date(public_date):
@@ -37,7 +38,7 @@ def record(kind: str, ticker: str, direction: int, strength: float, public_date:
             return False
         conn.execute(insert(t).values(kind=kind, ticker=ticker.upper(), issuer_cik=issuer_cik, direction=int(direction),
                                       strength=float(strength), public_date=public_date, source_ref=source_ref,
-                                      mode=mode, recorded_at=datetime.now()))
+                                      mode=mode, recorded_at=datetime.now(), market=market or markets.of_ticker(ticker)))
     return True
 
 
@@ -49,8 +50,22 @@ def load_calls(engine=None, mode: str | None = None) -> pd.DataFrame:
     return df
 
 
+def _market(row) -> str:
+    m = row.get("market") if hasattr(row, "get") else None
+    return m if isinstance(m, str) and m in markets.MARKETS else markets.of_ticker(row["ticker"])
+
+
+def benchmark_of(row) -> str:
+    """Each call is graded against its own market's benchmark (SPY, Nifty 50, TOPIX)."""
+    return markets.get(_market(row)).benchmark
+
+
+def benchmarks_for(calls: pd.DataFrame) -> list[str]:
+    return sorted({benchmark_of(r) for r in calls.to_dict("records")})
+
+
 def grade(calls: pd.DataFrame, closes: pd.DataFrame, today: date, horizons=HORIZONS) -> pd.DataFrame:
-    """Excess return over SPY from the first close after public_date to the first close h calendar days later."""
+    """Excess return over the call's market benchmark, from the first close after public_date to h days later."""
     out = calls.copy()
     idx = closes.index
     out["entry"] = pd.NaT
@@ -65,7 +80,8 @@ def grade(calls: pd.DataFrame, closes: pd.DataFrame, today: date, horizons=HORIZ
         entry = idx[pos]
         out.at[i, "entry"] = entry
         series = closes[row["ticker"]] if row["ticker"] in closes else pd.Series(np.nan, index=idx)
-        bench = closes[BENCHMARK] if BENCHMARK in closes else pd.Series(np.nan, index=idx)
+        b_sym = benchmark_of(row)
+        bench = closes[b_sym] if b_sym in closes else pd.Series(np.nan, index=idx)
         for h in horizons:
             target = entry + pd.Timedelta(days=h)
             if target.date() > today:
@@ -154,10 +170,11 @@ def event_curve(calls: pd.DataFrame, closes: pd.DataFrame, days: int = 180) -> p
     idx, paths, months = closes.index, [], []
     for _, row in calls[calls["direction"] != 0].iterrows():
         pos = idx.searchsorted(pd.Timestamp(row["public_date"]), side="right")
-        if pos >= len(idx) or row["ticker"] not in closes or BENCHMARK not in closes:
+        b_sym = benchmark_of(row)
+        if pos >= len(idx) or row["ticker"] not in closes or b_sym not in closes:
             continue
         p = closes[row["ticker"]].iloc[pos:pos + days + 1].to_numpy()
-        b = closes[BENCHMARK].iloc[pos:pos + days + 1].to_numpy()
+        b = closes[b_sym].iloc[pos:pos + days + 1].to_numpy()
         if not len(p) or np.isnan(p[0]) or np.isnan(b[0]):
             continue
         path = np.full(days + 1, np.nan)

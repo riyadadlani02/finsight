@@ -67,6 +67,7 @@ filing_changes = Table(
     Column("added", Integer),
     Column("removed", Integer),
     Column("reworded", Integer),
+    Column("market", String(4), server_default="US"),
     UniqueConstraint("accession", "section", name="uq_filing_changes_section"),
 )
 
@@ -94,6 +95,7 @@ calls = Table(
     Column("recorded_at", DateTime, server_default=func.now()),
     Column("source_ref", String(80), nullable=False),
     Column("mode", String(10), nullable=False),         # live | backtest
+    Column("market", String(4), server_default="US"),   # US | IN | JP
     UniqueConstraint("kind", "source_ref", "mode", name="uq_calls_source"),
 )
 
@@ -119,6 +121,13 @@ debates = Table(
 )
 
 
+_ADDED_COLUMNS = [  # (table, column, DDL) for databases created before the column existed
+    ("insider_tx", "filed", "DATE"),
+    ("calls", "market", "VARCHAR(4) DEFAULT 'US'"),
+    ("filing_changes", "market", "VARCHAR(4) DEFAULT 'US'"),
+]
+
+
 @lru_cache(maxsize=4)
 def engine(url: str | None = None):
     url = url or config.database_url()
@@ -126,9 +135,10 @@ def engine(url: str | None = None):
     eng = create_engine(url, pool_pre_ping=True, connect_args=args)
     metadata.create_all(eng)
     # create_all never alters an existing table; add columns introduced after a database was created.
-    if "filed" not in {c["name"] for c in inspect(eng).get_columns("insider_tx")}:
-        with eng.begin() as conn:
-            conn.execute(text("ALTER TABLE insider_tx ADD COLUMN filed DATE"))
+    for table, column, ddl in _ADDED_COLUMNS:
+        if column not in {c["name"] for c in inspect(eng).get_columns(table)}:
+            with eng.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
     return eng
 
 
