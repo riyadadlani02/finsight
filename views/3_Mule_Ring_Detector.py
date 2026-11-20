@@ -114,19 +114,23 @@ with tab_rings:
                                     "internal_flow": st.column_config.NumberColumn(format="%.0f")})
         ring_id = st.selectbox("Inspect ring", summary["ring"])
         view = graph.ring_subgraph(G, rings, ring_id)
-        net = Network(height="560px", width="100%", directed=True, cdn_resources="in_line")
+        net = Network(height="560px", width="100%", directed=True, cdn_resources="in_line",
+                      bgcolor="#1F2C34", font_color=ui.INK)
         peak = max(d["amount"] for _, _, d in view.edges(data=True))
         for node, attrs in view.nodes(data=True):
             role, name = attrs["role"], escape(str(node))  # ids may come from an uploaded file
             net.add_node(name, label=name if role != "payer" else " ", color=COLORS[role],
                          size=10 if role == "payer" else 22, title=f"{name} · {role} · risk {risk.get(node, 0):.2f}")
         for u, v, d in view.edges(data=True):
-            net.add_edge(escape(str(u)), escape(str(v)), width=1 + 6 * d["amount"] / peak,
+            net.add_edge(escape(str(u)), escape(str(v)), width=1 + 6 * d["amount"] / peak, color="rgba(238,243,246,.35)",
                          title=f"{d['amount']:,.0f} in {d['count']} transfers")
+        # pyvis wraps the graph in a white bootstrap card; match the stage instead.
+        graph_html = net.generate_html().replace(
+            "</head>", "<style>body{margin:0;background:#1F2C34}.card{border:0;background:transparent}</style></head>", 1)
         if hasattr(st, "iframe"):
-            st.iframe(net.generate_html(), height=580)
+            st.iframe(graph_html, height=580)
         else:  # older Streamlit
-            st.components.v1.html(net.generate_html(), height=580)
+            st.components.v1.html(graph_html, height=580)
         st.caption("Red: mule. Violet: likely cash-out. Grey: outside payers (possible victims). "
                    "Arrow width = amount. Hover for details.")
         members = rings[rings["ring"] == ring_id].set_index("account")
