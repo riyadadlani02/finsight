@@ -122,6 +122,26 @@ in_deals = Table(
     UniqueConstraint("date", "symbol", "client", "side", "quantity", "price", "kind", name="uq_in_deals_line"),
 )
 
+# Said vs did: promises from past annual reports and how they turned out (core/promises.py).
+promises = Table(
+    "promises", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("ticker", String(20), nullable=False, index=True),
+    Column("market", String(4), server_default="US"),
+    Column("latest", String(40), nullable=False),     # newest report the ledger was built from
+    Column("pid", String(10), nullable=False),
+    Column("made_in", String(40)),
+    Column("made_filed", String(10)),
+    Column("quote", Text),
+    Column("promise", Text),
+    Column("deadline", String(40)),
+    Column("verdict", String(10)),                     # kept | partly | missed | dropped | open | unchecked
+    Column("evidence_quote", Text),
+    Column("evidence_filed", String(10)),
+    Column("checked_at", DateTime, server_default=func.now()),
+    UniqueConstraint("ticker", "latest", "pid", name="uq_promises_ledger"),
+)
+
 debates = Table(
     "debates", metadata,
     Column("id", Integer, primary_key=True),
