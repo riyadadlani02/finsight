@@ -83,3 +83,22 @@ def test_split_paragraphs_on_single_newlines():
     # EDGAR HTML becomes one paragraph per line, with no blank lines between them.
     text = "\n".join(BASE + ["Short heading"])
     assert changes.split_paragraphs(text) == BASE
+
+
+def test_explain_drops_unknown_ids(monkeypatch):
+    from types import SimpleNamespace as NS
+    from core import debate
+    sent = {}
+
+    def create(**kw):
+        sent.update(kw)
+        body = '{"changes": [{"id": "p2", "section": "Risk Factors", "kind": "strengthened", "summary": "Adds a chip supplier risk."},' \
+               ' {"id": "p99", "section": "Risk Factors", "kind": "new risk", "summary": "Invented."}]}'
+        return NS(stop_reason="end_turn", content=[NS(type="text", text=body)])
+
+    monkeypatch.setattr(debate, "_client", lambda: NS(beta=NS(messages=NS(create=create))))
+    new = [BASE[0], "We depend on a small number of carriers and contract manufacturers, and a single supplier for our chips.", BASE[2]]
+    diffs = {"Risk Factors": changes.diff_sections("\n".join(BASE), "\n".join(new))}
+    out = changes.explain("Acme Corp", "ACME", diffs)
+    assert [c["id"] for c in out] == ["p2"] and out[0]["kind"] == "strengthened"
+    assert sent["output_config"]["format"]["type"] == "json_schema" and "tool_choice" not in sent

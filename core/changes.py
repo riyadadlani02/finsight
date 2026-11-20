@@ -6,6 +6,7 @@ explains paragraphs this module has already classified.
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from dataclasses import astuple, dataclass, field
 from datetime import date, timedelta
@@ -19,7 +20,7 @@ from sqlalchemy import insert, select
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from . import db, edgar
+from . import config, db, debate, edgar
 
 UNCHANGED, REWORDED = 0.9, 0.5  # paragraph match thresholds (design doc)
 Kind = Literal["added", "removed", "reworded", "unchanged"]
@@ -191,3 +192,44 @@ def screen(days: int, engine=None, progress: Callable[[int, int], None] | None =
             progress(i, len(ciks))
     cols = ["ticker", "name", "filed", "combined", "risk_factors", "mdna", "accession"]
     return pd.DataFrame(rows, columns=cols).sort_values("combined", ascending=False).reset_index(drop=True)
+
+
+# ------------------------------------------------------------ explanation
+
+KINDS = ["new risk", "dropped risk", "softened", "strengthened", "other"]
+EXPLAIN_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["changes"],
+    "properties": {"changes": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["id", "section", "kind", "summary"],
+        "properties": {"id": {"type": "string"}, "section": {"type": "string"},
+                       "kind": {"type": "string", "enum": KINDS}, "summary": {"type": "string"}}}}},
+}
+EXPLAIN = """You compare two consecutive 10-K filings of {name} ({ticker}). You get only the paragraphs a
+text diff found added, removed or reworded, each tagged [section id kind]. Explain the material ones:
+a new or dropped risk, a risk made stronger or softer, a real change in what management says. Skip
+trivial edits (dates, numbering, wording with the same meaning). Use only the ids given, one plain
+sentence each, and quote nothing that is not in the paragraphs."""
+
+
+def explain(name: str, ticker: str, diffs: dict[str, SectionDiff], max_chars: int = 60_000) -> list[dict]:
+    """Claude's reading of the measured changes. Items citing an id the diff didn't produce are dropped."""
+    changed = sorted(((section, p) for section, d in diffs.items() for p in d.paras if p.kind != "unchanged"),
+                     key=lambda sp: sp[1].match)  # most changed first; added/removed have match 0
+    parts, used = [], 0
+    for section, p in changed:
+        block = f"[{section} {p.id} {p.kind}]\nOLD: {p.old or '(none)'}\nNEW: {p.new or '(none)'}"
+        if used + len(block) > max_chars:
+            break
+        parts.append(block)
+        used += len(block)
+    if not parts:
+        return []
+    resp = debate._client().beta.messages.create(
+        model=config.claude_model(), max_tokens=16000, system=EXPLAIN.format(name=name, ticker=ticker),
+        messages=[{"role": "user", "content": "\n\n".join(parts)}],
+        output_config={"format": {"type": "json_schema", "schema": EXPLAIN_SCHEMA}}, **debate.FALLBACK)
+    if resp.stop_reason != "end_turn":
+        raise RuntimeError(f"Claude stopped early ({resp.stop_reason}) without an explanation.")
+    valid = {(section, p.id) for section, d in diffs.items() for p in d.paras}
+    items = json.loads(next(b.text for b in resp.content if b.type == "text"))["changes"]
+    return [c for c in items if (c["section"], c["id"]) in valid]
